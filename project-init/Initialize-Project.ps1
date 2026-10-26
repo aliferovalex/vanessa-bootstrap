@@ -9,7 +9,7 @@ connect repositories, or push Git commits. TargetDirectory must not exist.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('File','Server')][string]$InfobaseType,
+    [ValidateSet('File','Server','Repository')][string]$InfobaseType,
     [string]$Infobase,
     [string]$TargetDirectory,
     [string]$TemplateDirectory,
@@ -25,6 +25,8 @@ param(
     [Security.SecureString]$Password,
     [string]$RepositoryUserName,
     [Security.SecureString]$RepositoryPassword,
+    [ValidateRange(-1,2147483647)][int]$RepositoryVersion=-1,
+    [string]$ExtensionRepositoryFile,
     [string[]]$Extensions,
     [switch]$NoExtensions,
     [switch]$AskCredential,
@@ -40,6 +42,7 @@ $ErrorActionPreference = 'Stop'
 $utf8 = New-Object Text.UTF8Encoding($false)
 $secret = $null
 $repositorySecret = $null
+. (Join-Path $PSScriptRoot 'Native-Tools.ps1')
 
 function Resolve-Executable([string]$Value) {
     if (Test-Path -LiteralPath $Value -PathType Leaf) { return (Get-Item -LiteralPath $Value).FullName }
@@ -132,7 +135,7 @@ function Import-Edt([string]$Xml,[string]$Name,[string]$Destination,[string]$Bas
 }
 
 try {
-    if (-not $InfobaseType) { $InfobaseType = Read-Host 'Infobase type (File/Server)'; if ($InfobaseType -notin @('File','Server')) { throw 'Expected File or Server' } }
+    if (-not $InfobaseType) { $InfobaseType = Read-Host 'Source type (File/Server/Repository)'; if ($InfobaseType -notin @('File','Server','Repository')) { throw 'Expected File, Server or Repository' } }
     if (-not $Infobase) { $Infobase = Read-Host 'Infobase path or server\name' }
     if (-not $TargetDirectory) { $TargetDirectory = Read-Host 'New Git project directory' }
     if (-not $DesignerPath) { $DesignerPath = Read-Host 'Full path to 1cv8.exe' }
@@ -156,7 +159,33 @@ try {
     if (Test-Path -LiteralPath $TargetDirectory) { throw 'TargetDirectory already exists. Choose a new directory; existing files are never overwritten.' }
     $parent = Split-Path -Parent $TargetDirectory
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Target parent directory must exist.' }
-    if ($AskCredential -and -not $Preview) {
+    $repositories=@()
+    if ($InfobaseType -eq 'Repository') {
+        if ($RepositoryVersion -eq 0 -or $UserName -or $Password) { throw 'Use repository credentials and version -1 or a positive version.' }
+        $sourceRepositoryUrl=$Infobase
+        if ($ExtensionRepositoryFile) {
+            $repositories=@([IO.File]::ReadAllText((Get-Item -LiteralPath $ExtensionRepositoryFile).FullName) | ConvertFrom-Json)
+            $names=@{}
+            foreach ($entry in $repositories) {
+                if (@($entry.PSObject.Properties.Name | Where-Object { $_ -notin @('name','url','version') }).Count -or -not $entry.name -or -not $entry.url) { throw 'Extension entry requires name, url and optional version.' }
+                Assert-ProjectName $entry.name;Assert-SingleLine $entry.url 'Repository URL'
+                if ($names.ContainsKey($entry.name)) { throw 'Duplicate extension repository.' };$names[$entry.name]=$true
+                if ($entry.PSObject.Properties.Name -notcontains 'version') { $entry | Add-Member -NotePropertyName version -NotePropertyValue -1 }
+                if ($entry.version -isnot [int] -or $entry.version -lt -1 -or $entry.version -eq 0) { throw 'Invalid extension version.' }
+            }
+            if ($NoExtensions) { throw 'ExtensionRepositoryFile conflicts with NoExtensions.' }
+        }
+    } elseif ($ExtensionRepositoryFile) { throw 'ExtensionRepositoryFile requires Repository source.' }
+    if ($InfobaseType -eq 'Repository') {
+        foreach ($url in @($sourceRepositoryUrl)+@($repositories | ForEach-Object { $_.url })) {
+            $uri=$null
+            if (-not [Uri]::TryCreate($url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -notin @('http','https','tcp') -or -not $uri.Host -or $uri.UserInfo -or $uri.Query -or $uri.Fragment) { throw 'Repository URL must use HTTP(S) or TCP without credentials, query or fragment.' }
+        }
+    }
+    if ($AskCredential -and -not $Preview -and $InfobaseType -eq 'Repository') {
+        $credential=Get-Credential -Message 'Repository account'
+        $RepositoryUserName=$credential.UserName;$RepositoryPassword=$credential.Password
+    } elseif ($AskCredential -and -not $Preview) {
         $credential = Get-Credential -Message 'Source infobase account'
         $UserName = $credential.UserName; $Password = $credential.Password
     }
@@ -208,7 +237,28 @@ try {
     if ($GitUserEmail) { $gitIdentity += @('-c',('user.email='+$GitUserEmail)) }
     if (-not $SkipInitialCommit) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'var','GIT_AUTHOR_IDENT')) 'git-check-identity') }
     $xmlMain = Join-Path $work 'xml-configuration'
+    if ($InfobaseType -eq 'Repository') {
+        if (-not $RepositoryUserName) { throw 'RepositoryUserName is required.' }
+        $Infobase=Join-Path $work 'read-base';$connectionOption='/F'
+        Invoke-ProjectNative -Executable $DesignerPath -Arguments @('/DisableStartupDialogs','/DisableStartupMessages','/Out',(Join-Path $work 'create-base.log')) -CreateFile $Infobase -Directory $work -Label 'create-base' -TimeoutSeconds $TimeoutSeconds
+        function Read-RepositorySnapshot([string]$Url,[int]$Version,[string]$Name) {
+            $suffix=if ($Name) { $Name } else { 'configuration' }
+            $file=Join-Path $work ($suffix+'.cf')
+            $extension=if ($Name) { @('-Extension',$Name) } else { @() }
+            $common=@('DESIGNER','/F',$Infobase,'/DisableStartupDialogs','/DisableStartupMessages')
+            [void](Run-Native $DesignerPath ($common+@('/ConfigurationRepositoryF',$Url,'/ConfigurationRepositoryN',$RepositoryUserName,'/ConfigurationRepositoryP',[string]$repositorySecret,'/ConfigurationRepositoryDumpCfg',$file,'-v',[string]$Version)+$extension+@('/Out',(Join-Path $work ($suffix+'-repository.log')))) ($suffix+'-repository'))
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-Item -LiteralPath $file).Length -eq 0) { throw 'Repository snapshot was not created.' }
+            [void](Run-Native $DesignerPath ($common+@('/LoadCfg',$file)+$extension+@('/Out',(Join-Path $work ($suffix+'-load.log')))) ($suffix+'-load'))
+        }
+        Read-RepositorySnapshot $sourceRepositoryUrl $RepositoryVersion ''
+    }
     Export-Xml $xmlMain 'dump-main'
+    foreach ($entry in $repositories) {
+        $placeholder=Join-Path $work ('placeholder-'+$entry.name)
+        New-ExtensionPlaceholder (Join-Path $xmlMain 'Configuration.xml') $placeholder $entry.name
+        [void](Run-Native $DesignerPath @('DESIGNER','/F',$Infobase,'/DisableStartupDialogs','/DisableStartupMessages','/LoadConfigFromFiles',$placeholder,'-Extension',$entry.name,'/Out',(Join-Path $work ($entry.name+'-placeholder.log'))) ($entry.name+'-placeholder'))
+        Read-RepositorySnapshot $entry.url $entry.version $entry.name
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $xmlMain 'Configuration.xml'))) { throw 'Designer did not export Configuration.xml.' }
     $extensionDirs = @()
     if (-not $NoExtensions) {
@@ -240,6 +290,7 @@ try {
     }
     $manifest = [ordered]@{schemaVersion=1;sourceFormat='EDT';platformVersion=$platformVersion;configuration=@{projectName=$ProjectName;path='src/cf'};extensions=@($mapping);synchronization=@{enabled=$false;status='Unconfigured: repository baseline must be established separately'}}
     if ($TemplateDirectory) { $manifest['template'] = @{repository='https://github.com/aliferovalex/vanessa-bootstrap';commit=$templateCommit} }
+    if ($InfobaseType -eq 'Repository') { $manifest['initializationSource']=@{kind='repository';url=$sourceRepositoryUrl;requestedVersion=$RepositoryVersion;extensions=@($repositories);baselineVerified=$false} }
     Write-Text (Join-Path $staging 'project-init.json') ($manifest | ConvertTo-Json -Depth 8)
     foreach ($relative in @('env.json','tools/JSON/vrunner.json')) {
         $settingsPath = Join-Path $staging $relative

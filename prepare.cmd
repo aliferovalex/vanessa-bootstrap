@@ -1,7 +1,4 @@
-@if exist "%~dp0src\cf\.project" (
-  @echo EDT sources require EDT-to-XML conversion before vrunner. See doc/EDT-INITIALIZATION.md. 1>&2
-  @exit /b 2
-)
+@if exist "%~dp0src\cf\.project" goto edt
 @chcp 65001
 
 @rem Сборка основной разработческой ИБ. по умолчанию в каталоге build/ib
@@ -20,3 +17,7 @@ call vrunner init-dev --src src/cf %*
 
 @rem Обновление в режиме Предприятия
 call vrunner run --command "ЗапуститьОбновлениеИнформационнойБазы;ЗавершитьРаботуСистемы;" --execute $runnerRoot\epf\ЗакрытьПредприятие.epf %*
+exit /b %ERRORLEVEL%
+:edt
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\Run-Project.ps1" -Action Prepare %*
+exit /b %ERRORLEVEL%

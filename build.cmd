@@ -1,7 +1,4 @@
-@if exist "%~dp0src\cf\.project" (
-  @echo EDT sources require EDT-to-XML conversion before vrunner. See doc/EDT-INITIALIZATION.md. 1>&2
-  @exit /b 2
-)
+@if exist "%~dp0src\cf\.project" goto edt
 @chcp 65001
 
 @rem формирование файла конфигурации. для включения раскомментируйте код ниже
@@ -17,3 +14,7 @@ call vrunner compile --src src/cf --out build/1cv8.cf %*
 
 @rem собрать расширения конфигурации внутри ИБ
 @rem call vrunner compileext src/cfe/МоеРасширение МоеРасширение %*
+exit /b %ERRORLEVEL%
+:edt
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\Run-Project.ps1" -Action Build %*
+exit /b %ERRORLEVEL%

@@ -1,11 +1,12 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]param(
-    [string]$ProjectDirectory=(Split-Path $PSScriptRoot -Parent),
+    [string]$ProjectDirectory,
     [string]$EdtCliPath=$env:ONEC_EDT_CLI,
     [string]$EdtIniFile=$env:ONEC_EDT_INI,
     [ValidateRange(30,86400)][int]$TimeoutSeconds=1800
 )
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+if (-not $ProjectDirectory) { $ProjectDirectory=Split-Path $PSScriptRoot -Parent }
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'project-init/Native-Tools.ps1')
 if (-not $EdtCliPath) { throw 'Specify EdtCliPath or ONEC_EDT_CLI.' }
 $EdtCliPath=(Get-Command $EdtCliPath -CommandType Application -ErrorAction Stop).Source

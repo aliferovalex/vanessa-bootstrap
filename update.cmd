@@ -1,3 +1,4 @@
+@echo off
 @if exist "%~dp0src\cf\.project" goto edt
 @chcp 65001
 

@@ -1,7 +1,7 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]param(
     [ValidateSet('Build','Prepare','Update')][string]$Action='Build',
-    [string]$ProjectDirectory=(Split-Path $PSScriptRoot -Parent),
+    [string]$ProjectDirectory,
     [string]$EdtCliPath=$env:ONEC_EDT_CLI,
     [string]$EdtIniFile=$env:ONEC_EDT_INI,
     [string]$DesignerPath=$env:ONEC_DESIGNER,
@@ -10,6 +10,7 @@
     [ValidateRange(30,86400)][int]$TimeoutSeconds=1800
 )
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+if (-not $ProjectDirectory) { $ProjectDirectory=Split-Path $PSScriptRoot -Parent }
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'project-init/Native-Tools.ps1')
 if (-not $DesignerPath) { throw 'Specify DesignerPath or ONEC_DESIGNER.' }
 $DesignerPath=(Get-Command $DesignerPath -CommandType Application -ErrorAction Stop).Source

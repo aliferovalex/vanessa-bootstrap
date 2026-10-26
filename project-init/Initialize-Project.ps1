@@ -249,10 +249,6 @@ try {
         if (-not ([IO.Path]::GetFullPath($staging)).StartsWith([IO.Path]::GetFullPath($work)+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe staging path.' }
         [void](Run-Native $GitPath @('-C',$staging,'rm','-r','--ignore-unmatch','--','src/cf','src/cfe') 'remove-placeholders')
         $templateCommit=$originalState.head
-        foreach ($setting in @('user.name','user.email')) {
-            $value=& $GitPath -C $TargetDirectory config $setting
-            if ($LASTEXITCODE -eq 0 -and $value) { [void](Run-Native $GitPath @('-C',$staging,'config','--local',$setting,[string]$value) ('copy-'+$setting)) }
-        }
     } elseif ($TemplateDirectory) {
         $TemplateDirectory = (Get-Item -LiteralPath $TemplateDirectory).FullName
         if (Run-Native $GitPath @('-C',$TemplateDirectory,'status','--porcelain') 'template-clean') { throw 'Commit template changes before initialization.' }
@@ -271,6 +267,12 @@ try {
     }
     [void][IO.Directory]::CreateDirectory((Join-Path $staging 'src\cfe'))
     if (-not $inPlace -or $FreshHistory) { [void](Run-Native $GitPath @('-C',$staging,'init',('--initial-branch='+$GitBranch)) 'git-init') }
+    if ($inPlace) {
+        foreach ($setting in @('user.name','user.email')) {
+            $value=& $GitPath -C $TargetDirectory config $setting
+            if ($LASTEXITCODE -eq 0 -and $value) { [void](Run-Native $GitPath @('-C',$staging,'config','--local',$setting,[string]$value) ('copy-'+$setting)) }
+        }
+    }
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.autocrlf','true') 'git-windows-line-endings')
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.safecrlf','true') 'git-safe-line-endings')
     if (-not $NoGitLfs) {

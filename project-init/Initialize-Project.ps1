@@ -15,6 +15,7 @@ param(
     [string]$TargetDirectory,
     [string]$TemplateDirectory,
     [string]$ProjectRemoteUrl,
+    [string]$GitBranch,
     [string]$DesignerPath,
     [string]$EdtCliPath,
     [string]$EdtIniFile,
@@ -178,6 +179,12 @@ try {
     elseif (Test-Path -LiteralPath $TargetDirectory) { throw 'TargetDirectory already exists. Choose a new directory; existing files are never overwritten.' }
     $parent = Split-Path -Parent $TargetDirectory
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Target parent directory must exist.' }
+    $defaultBranch=if ($inPlace) { $originalState.branch } else { 'main' }
+    if (-not $GitBranch -and $interactiveRun -and -not $Preview) {
+        $GitBranch=Read-Host ("Git branch [$defaultBranch]")
+    }
+    if (-not $GitBranch) { $GitBranch=$defaultBranch }
+    Assert-InitializationBranch $GitPath $(if($inPlace){$TargetDirectory}else{$parent}) $GitBranch $(if($inPlace){$originalState.branch}else{''})
     $repositories=@()
     if ($InfobaseType -eq 'Repository') {
         if ($RepositoryVersion -eq 0 -or $UserName -or $Password) { throw 'Use repository credentials and version -1 or a positive version.' }
@@ -210,7 +217,7 @@ try {
         $UserName = $credential.UserName; $Password = $credential.Password
     }
     if ($Preview) {
-        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
+        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
         return
     }
     if ($UserName -and -not $Password) { $Password = Read-Host 'Infobase password (empty allowed)' -AsSecureString }
@@ -258,7 +265,7 @@ try {
         }
     }
     [void][IO.Directory]::CreateDirectory((Join-Path $staging 'src\cfe'))
-    if (-not $inPlace) { [void](Run-Native $GitPath @('-C',$staging,'init','--initial-branch=main') 'git-init') }
+    if (-not $inPlace) { [void](Run-Native $GitPath @('-C',$staging,'init',('--initial-branch='+$GitBranch)) 'git-init') }
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.autocrlf','true') 'git-windows-line-endings')
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.safecrlf','true') 'git-safe-line-endings')
     if (-not $NoGitLfs) {
@@ -384,8 +391,15 @@ try {
             }
         }
         [void](Run-Native $GitPath @('-C',$TargetDirectory,'fetch','--no-tags','--no-write-fetch-head',$staging,$prepared) 'fetch-prepared')
-        $merge=if ($SkipInitialCommit) { @('merge','--squash',$prepared) } else { @('merge','--ff-only','--no-edit',$prepared) }
-        [void](Run-Native $GitPath (@('-C',$TargetDirectory)+$merge) 'publish-project')
+        Assert-InitializationBranch $GitPath $TargetDirectory $GitBranch $originalState.branch
+        if ($GitBranch -ne $originalState.branch) {
+            $start=if ($SkipInitialCommit) { $originalState.head } else { $prepared }
+            [void](Run-Native $GitPath @('-C',$TargetDirectory,'switch','--no-track','-c',$GitBranch,$start) 'create-project-branch')
+        }
+        if ($GitBranch -eq $originalState.branch -or $SkipInitialCommit) {
+            $merge=if ($SkipInitialCommit) { @('merge','--squash',$prepared) } else { @('merge','--ff-only','--no-edit',$prepared) }
+            [void](Run-Native $GitPath (@('-C',$TargetDirectory)+$merge) 'publish-project')
+        }
     } else { Move-Item -LiteralPath $staging -Destination $TargetDirectory }
     $projectPublished=$true
     if ($ProjectRemoteUrl) { Set-ProjectRemote $GitPath $TargetDirectory $ProjectRemoteUrl }
@@ -394,6 +408,7 @@ try {
         if ($remote) { Set-ProjectRemote $GitPath $TargetDirectory $remote }
     }
     Write-Host "Created: $TargetDirectory"
+    Write-Host "Git branch: $GitBranch"
     Write-Host "Diagnostics and intermediate exports: $work"
     if ($RegisterEdtStart) {
         if (-not $EdtWorkspaceDirectory) { $EdtWorkspaceDirectory = $TargetDirectory + '-workspace' }

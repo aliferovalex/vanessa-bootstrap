@@ -22,6 +22,14 @@ function Get-InPlaceState([string]$Git,[string]$Repository) {
     $directory=Invoke-InitGit $Git $Repository @('rev-parse','--absolute-git-dir')
     [pscustomobject]@{head=$head;branch=$branch;gitDirectory=$directory}
 }
+function Assert-InitializationBranch([string]$Git,[string]$Repository,[string]$Name,[string]$CurrentBranch) {
+    if (-not $Name -or $Name.StartsWith('-') -or $Name -eq 'HEAD') { throw 'Invalid Git branch name.' }
+    [void](Invoke-InitGit $Git $Repository @('check-ref-format',('refs/heads/'+$Name)))
+    if ($CurrentBranch -and $Name -ne $CurrentBranch) {
+        $branches=(Invoke-InitGit $Git $Repository @('for-each-ref','--format=%(refname)','refs/heads')) -split "`n"
+        if (('refs/heads/'+$Name) -in $branches) { throw 'Requested branch already exists. Switch to it before initialization or choose a new name.' }
+    }
+}
 function Set-ProjectGit([string]$Git,[string]$Repository,[string]$UserName,[string]$UserEmail,[bool]$NoLfs=$false) {
     foreach ($setting in @(@('core.quotepath','false'),@('core.autocrlf','true'),@('core.safecrlf','true'),@('core.longpaths','true'))) {
         [void](Invoke-InitGit $Git $Repository @('config','--local',$setting[0],$setting[1]))

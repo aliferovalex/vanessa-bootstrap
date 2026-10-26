@@ -100,4 +100,12 @@ try {
  try { & $script @common -TargetDirectory $bad -NoExtensions } catch {$failed=$true}
  Assert ($failed -and -not(Test-Path $bad)) 'Failed EDT import published a repository'
 } finally {$env:INIT_TEST_FAIL=$oldFail}
-Write-Host "PASS: preview, selected extension, base association, Git commit, LFS initial objects and hooks, opt-out, existing target, missing extension, failed import. Artifacts: $TestRoot"
+$interactiveTarget=Join-Path $TestRoot 'interactive selection'
+function Read-Host { param($Prompt) if($Prompt -like 'Select extension numbers*'){return '2'};throw 'Unexpected interactive prompt' }
+try {
+ & $script @common -TargetDirectory $interactiveTarget -SelectExtensions
+ $interactiveManifest=[IO.File]::ReadAllText((Join-Path $interactiveTarget 'project-init.json')) | ConvertFrom-Json
+ Assert ($interactiveManifest.extensions.Count -eq 1 -and $interactiveManifest.extensions[0].name -eq 'ExtTwo') 'Interactive selection imported wrong extensions'
+ Assert (-not(Test-Path (Join-Path $interactiveTarget 'src/cfe/ExtOne'))) 'Unselected project was imported'
+} finally { Remove-Item Function:\Read-Host }
+Write-Host "PASS: preview, selected extension, base association, Git commit, LFS initial objects and hooks, opt-out, existing target, missing extension, failed import, interactive selection. Artifacts: $TestRoot"

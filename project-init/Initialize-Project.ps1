@@ -28,6 +28,7 @@ param(
     [ValidateRange(-1,2147483647)][int]$RepositoryVersion=-1,
     [string]$ExtensionRepositoryFile,
     [string[]]$Extensions,
+    [switch]$SelectExtensions,
     [switch]$NoExtensions,
     [switch]$AskCredential,
     [switch]$Preview,
@@ -43,6 +44,8 @@ $utf8 = New-Object Text.UTF8Encoding($false)
 $secret = $null
 $repositorySecret = $null
 . (Join-Path $PSScriptRoot 'Native-Tools.ps1')
+. (Join-Path $PSScriptRoot 'Select-Extensions.ps1')
+$interactiveExtensions=$SelectExtensions -or (-not $PSBoundParameters.ContainsKey('InfobaseType') -and -not $Extensions -and -not $NoExtensions)
 
 function Resolve-Executable([string]$Value) {
     if (Test-Path -LiteralPath $Value -PathType Leaf) { return (Get-Item -LiteralPath $Value).FullName }
@@ -143,6 +146,7 @@ try {
     foreach ($value in @($Infobase,$TargetDirectory,$DesignerPath,$EdtCliPath,$ProjectName,$UserName,$RepositoryUserName)) { Assert-SingleLine $value 'Parameter' }
     Assert-ProjectName $ProjectName
     if ($NoExtensions -and $Extensions) { throw 'Use Extensions or NoExtensions, not both.' }
+    if ($SelectExtensions -and ($NoExtensions -or $Extensions)) { throw 'SelectExtensions conflicts with Extensions and NoExtensions.' }
     $DesignerPath = Resolve-Executable $DesignerPath
     $EdtCliPath = Resolve-Executable $EdtCliPath
     if ($EdtIniFile) { $EdtIniFile = (Get-Item -LiteralPath $EdtIniFile).FullName; Assert-SingleLine $EdtIniFile 'EdtIniFile' }
@@ -275,7 +279,8 @@ try {
             $availableNames = @($available | ForEach-Object { $_.Name })
             foreach ($name in $Extensions) { if ($name -notin $availableNames) { throw "Extension not found in export: $name" } }
             $extensionDirs = @($available | Where-Object Name -In $Extensions)
-        } else { $extensionDirs = $available }
+        } elseif ($interactiveExtensions) { $extensionDirs=@(Select-ProjectExtensions -Available $available) }
+        else { $extensionDirs = $available }
     }
     $names = @($ProjectName)
     foreach ($extension in $extensionDirs) {

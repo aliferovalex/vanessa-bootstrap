@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]param(
     [ValidateSet('Build','Prepare','Update')][string]$Action='Build',
     [string]$ProjectDirectory=(Split-Path $PSScriptRoot -Parent),
@@ -14,7 +14,7 @@ $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 if (-not $DesignerPath) { throw 'Specify DesignerPath or ONEC_DESIGNER.' }
 $DesignerPath=(Get-Command $DesignerPath -CommandType Application -ErrorAction Stop).Source
 $ProjectDirectory=(Get-Item -LiteralPath $ProjectDirectory).FullName
-$manifest=Get-Content -Raw -LiteralPath (Join-Path $ProjectDirectory 'project-init.json') | ConvertFrom-Json
+$manifest=Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $ProjectDirectory 'project-init.json') | ConvertFrom-Json
 if ((Get-Item -LiteralPath $DesignerPath).VersionInfo.FileVersion -ne $manifest.platformVersion) { throw 'Designer version differs from the project platform version.' }
 $export=& (Join-Path $PSScriptRoot 'Export-Edt.ps1') -ProjectDirectory $ProjectDirectory -EdtCliPath $EdtCliPath -EdtIniFile $EdtIniFile -TimeoutSeconds $TimeoutSeconds
 $work=$export.directory;$main=$export.projects[0];$base=Join-Path $work 'build-base'

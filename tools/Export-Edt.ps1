@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]param(
     [string]$ProjectDirectory=(Split-Path $PSScriptRoot -Parent),
     [string]$EdtCliPath=$env:ONEC_EDT_CLI,
@@ -10,7 +10,7 @@ $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 if (-not $EdtCliPath) { throw 'Specify EdtCliPath or ONEC_EDT_CLI.' }
 $EdtCliPath=(Get-Command $EdtCliPath -CommandType Application -ErrorAction Stop).Source
 $ProjectDirectory=(Get-Item -LiteralPath $ProjectDirectory).FullName
-$manifest=Get-Content -Raw -LiteralPath (Join-Path $ProjectDirectory 'project-init.json') | ConvertFrom-Json
+$manifest=Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $ProjectDirectory 'project-init.json') | ConvertFrom-Json
 if ($manifest.schemaVersion -ne 1 -or $manifest.sourceFormat -ne 'EDT' -or $manifest.platformVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'Expected an EDT initializer manifest with full platform version.' }
 $work=Join-Path $ProjectDirectory ('build/edt-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($work)
@@ -29,7 +29,7 @@ foreach ($entry in @($manifest.configuration)+@($manifest.extensions)) {
         if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Project junctions and symlinks are not supported.' }
         $ancestor=$ancestor.Parent
     }
-    [xml]$description=Get-Content -Raw -LiteralPath (Join-Path $source '.project')
+    [xml]$description=Get-Content -Encoding UTF8 -Raw -LiteralPath (Join-Path $source '.project')
     if ($description.projectDescription.name -ne $entry.projectName) { throw 'EDT project name differs from manifest.' }
     $copy=Join-Path $work ('sources/'+$entry.projectName)
     [void][IO.Directory]::CreateDirectory($copy)
@@ -52,6 +52,6 @@ Invoke-ProjectNative -Executable $EdtCliPath -Arguments $arguments -Directory $w
 foreach ($project in $projects) {
     $configuration=Join-Path $project.xml 'Configuration.xml'
     if (-not (Test-Path -LiteralPath $configuration -PathType Leaf) -or (Get-Item -LiteralPath $configuration).Length -eq 0) { throw 'EDT did not produce Configuration.xml.' }
-    [xml]$null=Get-Content -Raw -LiteralPath $configuration
+    [xml]$null=Get-Content -Encoding UTF8 -Raw -LiteralPath $configuration
 }
 [pscustomobject]@{directory=$work;platformVersion=$manifest.platformVersion;projects=$projects}

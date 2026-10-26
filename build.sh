@@ -1,4 +1,8 @@
 #!/bin/bash
+if [ -f src/cf/.project ]; then
+  echo "EDT sources require EDT-to-XML conversion. See doc/EDT-INITIALIZATION.md." >&2
+  exit 2
+fi
 
 # формирование файла конфигурации. для включения раскомментируйте код ниже
 vrunner compile --src src/cf --out build/1cv8.cf "$@"

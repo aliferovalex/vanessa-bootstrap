@@ -1,3 +1,5 @@
+> **EDT / Git LFS:** [Initialization guide](doc/EDT-INITIALIZATION.md). Start with `initialize.cmd`.
+
 <a id="markdown-шаблон-для-работы-правильного-1с-разработчика" name="шаблон-для-работы-правильного-1с-разработчика"></a>
 # Шаблон для работы правильного 1С разработчика
 

@@ -6,3 +6,9 @@ ConfigDumpInfo.xml
 build
 out
 .scannerwork
+
+.metadata/
+.project-init-*/
+*.1CD
+*.1CL
+*.log

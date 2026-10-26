@@ -1,4 +1,8 @@
 #!/bin/bash
+if [ -f src/cf/.project ]; then
+  echo "EDT sources require EDT-to-XML conversion. See doc/EDT-INITIALIZATION.md." >&2
+  exit 2
+fi
 
 # обновление конфигурации основной разработческой ИБ без поддержки или на поддержке. по умолчанию в каталоге build/ib
 vrunner update-dev --src src/cf --disable-support

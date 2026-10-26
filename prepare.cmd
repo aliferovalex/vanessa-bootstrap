@@ -1,3 +1,7 @@
+@if exist "%~dp0src\cf\.project" (
+  @echo EDT sources require EDT-to-XML conversion before vrunner. See doc/EDT-INITIALIZATION.md. 1>&2
+  @exit /b 2
+)
 @chcp 65001
 
 @rem Сборка основной разработческой ИБ. по умолчанию в каталоге build/ib

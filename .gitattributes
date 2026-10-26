@@ -37,3 +37,12 @@ Form.bin binary
 *.epf binary
 *.erf binary
 ParentConfigurations.bin binary
+
+# EDT resources: these rules override the binary entries above.
+*.cf filter=lfs diff=lfs merge=lfs -text
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.png filter=lfs diff=lfs merge=lfs -text
+*.gif filter=lfs diff=lfs merge=lfs -text
+*.bmp filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text

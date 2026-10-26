@@ -244,7 +244,8 @@ try {
         Invoke-ProjectNative -Executable $DesignerPath -Arguments @('/DisableStartupDialogs','/DisableStartupMessages','/Out',(Join-Path $work 'create-base.log')) -CreateFile $Infobase -Directory $work -Label 'create-base' -TimeoutSeconds $TimeoutSeconds
         function Read-RepositorySnapshot([string]$Url,[int]$Version,[string]$Name) {
             $suffix=if ($Name) { $Name } else { 'configuration' }
-            $file=Join-Path $work ($suffix+'.cf')
+            $snapshotExtension=if ($Name) { '.cfe' } else { '.cf' }
+            $file=Join-Path $work ($suffix+$snapshotExtension)
             $extension=if ($Name) { @('-Extension',$Name) } else { @() }
             $common=@('DESIGNER','/F',$Infobase,'/DisableStartupDialogs','/DisableStartupMessages')
             [void](Run-Native $DesignerPath ($common+@('/ConfigurationRepositoryF',$Url,'/ConfigurationRepositoryN',$RepositoryUserName,'/ConfigurationRepositoryP',[string]$repositorySecret,'/ConfigurationRepositoryDumpCfg',$file,'-v',[string]$Version)+$extension+@('/Out',(Join-Path $work ($suffix+'-repository.log')))) ($suffix+'-repository'))
@@ -266,6 +267,10 @@ try {
         $xmlExtensions = Join-Path $work 'xml-extensions'
         Export-Xml $xmlExtensions 'dump-extensions' -AllExtensions
         $available = @(Get-ChildItem -LiteralPath $xmlExtensions -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'Configuration.xml') })
+        if ($InfobaseType -eq 'Repository') {
+            $exportedNames=@($available | ForEach-Object { $_.Name })
+            foreach ($entry in $repositories) { if ($entry.name -notin $exportedNames) { throw 'Repository extension name differs from the requested name.' } }
+        }
         if ($Extensions) {
             $availableNames = @($available | ForEach-Object { $_.Name })
             foreach ($name in $Extensions) { if ($name -notin $availableNames) { throw "Extension not found in export: $name" } }

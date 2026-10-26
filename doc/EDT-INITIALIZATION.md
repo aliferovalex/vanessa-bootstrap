@@ -7,7 +7,7 @@
 ```powershell
 git clone https://github.com/aliferovalex/vanessa-bootstrap.git
 cd vanessa-bootstrap
-.\initialize.cmd -InfobaseType File -Infobase D:\Bases\Demo -TargetDirectory D:\Projects\Demo -DesignerPath C:\Tools\1C\bin\1cv8.exe -EdtCliPath C:\Tools\EDT\1cedtcli.exe -ProjectName Demo -AskCredential
+.\initialize.cmd -InfobaseType File -Infobase D:\Bases\Demo -DesignerPath C:\Tools\1C\bin\1cv8.exe -EdtCliPath C:\Tools\EDT\1cedtcli.exe -ProjectName Demo -AskCredential
 ```
 
 Сначала можно добавить `-Preview`. Для отдельного режима `-TargetDirectory` каталог назначения должен отсутствовать.

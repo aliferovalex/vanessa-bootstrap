@@ -5,7 +5,8 @@ Creates Git sources in EDT format from an existing 1C infobase.
 .DESCRIPTION
 Reads the main configuration and extensions using Designer, then imports XML
 with EDT CLI into an isolated workspace. Does not update the source infobase,
-connect repositories, or push Git commits. TargetDirectory must not exist.
+bind repositories, or push Git commits. By default the template clone is
+initialized in place; an explicit different TargetDirectory must not exist.
 #>
 [CmdletBinding()]
 param(

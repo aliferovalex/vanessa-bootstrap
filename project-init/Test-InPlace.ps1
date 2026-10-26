@@ -27,6 +27,8 @@ Assert (Test-Path (Join-Path $clone 'src/cfe/ExtTwo/.project')) 'Selected extens
 Assert (-not (Test-Path (Join-Path $clone 'src/cfe/ExtOne'))) 'Unselected extension imported'
 Assert (-not (& git -C $clone status --porcelain)) 'Initialized repository is dirty'
 Assert ((& git -C $clone config --local core.safecrlf) -eq 'true') 'Safe line ending checks disabled'
+& (Join-Path $template 'tools/git-global-init.cmd') -ProjectDirectory $clone -NoGitLfs
+Assert ((& git -C $clone config --local user.name) -eq 'Test') 'Legacy Git setup replaced the author'
 Assert (([IO.File]::ReadAllBytes((Join-Path $clone 'src/cf/src/image.png')) -join ',') -eq '0,13,10,255') 'LFS content was not materialized'
 $failed=$false;try { & $script @common -TemplateDirectory $clone } catch {$failed=$true}
 Assert $failed 'Repeated initialization was accepted'

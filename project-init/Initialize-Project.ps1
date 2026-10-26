@@ -164,7 +164,8 @@ try {
         if ($RepositoryVersion -eq 0 -or $UserName -or $Password) { throw 'Use repository credentials and version -1 or a positive version.' }
         $sourceRepositoryUrl=$Infobase
         if ($ExtensionRepositoryFile) {
-            $repositories=@([IO.File]::ReadAllText((Get-Item -LiteralPath $ExtensionRepositoryFile).FullName) | ConvertFrom-Json)
+            $parsedRepositories=[IO.File]::ReadAllText((Get-Item -LiteralPath $ExtensionRepositoryFile).FullName) | ConvertFrom-Json
+            $repositories=@($parsedRepositories)
             $names=@{}
             foreach ($entry in $repositories) {
                 if (@($entry.PSObject.Properties.Name | Where-Object { $_ -notin @('name','url','version') }).Count -or -not $entry.name -or -not $entry.url) { throw 'Extension entry requires name, url and optional version.' }

@@ -39,6 +39,7 @@ $trace=Join-Path $TestRoot 'trace.txt';$env:PROJECT_TEST_TRACE=$trace
 $target=Join-Path $TestRoot 'project'
 $template=Split-Path $PSScriptRoot -Parent
 $common=@{InfobaseType='Repository';Infobase='http://example.invalid/repo/repo.1ccr/Main';RepositoryVersion=12;ExtensionRepositoryFile=$extensions;RepositoryUserName='reader';RepositoryPassword=(ConvertTo-SecureString 'secret-test' -AsPlainText -Force);DesignerPath=$exe;EdtCliPath=$exe;TemplateDirectory=$template;ProjectName='Demo';TargetDirectory=$target;GitUserName='Test';GitUserEmail='test@example.invalid';TimeoutSeconds=30}
+$common.ProjectName='Demo_'+[char]0x0422
 function Assert($condition,$message){if(-not $condition){throw $message}}
 try {
  & (Join-Path $PSScriptRoot 'Initialize-Project.ps1') @common
@@ -54,8 +55,22 @@ try {
  $result=& (Join-Path $template 'tools/Run-Project.ps1') -Action Prepare -ProjectDirectory $target -DesignerPath $exe -EdtCliPath $exe -Runner $exe -TimeoutSeconds 30
  Assert ((Get-Content -Raw -LiteralPath $trace).Contains('compileext|')) 'Runner did not receive extension XML'
  Assert (-not (& git -C $target status --porcelain)) 'Build changed source files'
+ $manifestPath=Join-Path $target 'project-init.json';$original=[IO.File]::ReadAllBytes($manifestPath)
+ try {
+     $text=[IO.File]::ReadAllText($manifestPath).Replace('8.5.1.1529','8.3.27.2342')
+     [IO.File]::WriteAllText($manifestPath,$text,[Text.UTF8Encoding]::new($false))
+     $before=[IO.File]::ReadAllText($trace);$failed=$false
+     try { & (Join-Path $template 'tools/Run-Project.ps1') -ProjectDirectory $target -DesignerPath $exe -EdtCliPath $exe } catch {$failed=$true}
+     Assert ($failed -and [IO.File]::ReadAllText($trace) -eq $before) 'Wrong platform reached native tools'
+ } finally { [IO.File]::WriteAllBytes($manifestPath,$original) }
+ $invalid=$common.Clone();$invalid.Infobase='https://reader:password@example.invalid/repo/repo.1ccr/Main';$invalid.TargetDirectory=Join-Path $TestRoot 'invalid-url';$failed=$false
+ try { & (Join-Path $PSScriptRoot 'Initialize-Project.ps1') @invalid -Preview } catch {$failed=$true}
+ Assert ($failed -and -not (Test-Path $invalid.TargetDirectory)) 'Credential URL accepted'
  $env:PROJECT_TEST_FAIL='1';$failed=$false
  try { & (Join-Path $template 'tools/Run-Project.ps1') -ProjectDirectory $target -DesignerPath $exe -EdtCliPath $exe -TimeoutSeconds 30 } catch {$failed=$true}
  Assert $failed 'EDT failure was ignored'
+ $invalid=$common.Clone();$invalid.TargetDirectory=Join-Path $TestRoot 'failed-repository';$failed=$false
+ try { & (Join-Path $PSScriptRoot 'Initialize-Project.ps1') @invalid } catch {$failed=$true}
+ Assert ($failed -and -not (Test-Path $invalid.TargetDirectory)) 'Repository failure published a project'
  Write-Host 'PASS: repository snapshots, extension context, manifest, CF/CFE build, runner integration and failed export.'
 } finally { Remove-Item Env:PROJECT_TEST_TRACE -ErrorAction SilentlyContinue;Remove-Item Env:PROJECT_TEST_FAIL -ErrorAction SilentlyContinue }

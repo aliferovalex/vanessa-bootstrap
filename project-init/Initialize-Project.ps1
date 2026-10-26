@@ -13,6 +13,7 @@ param(
     [string]$Infobase,
     [string]$TargetDirectory,
     [string]$TemplateDirectory,
+    [string]$ProjectRemoteUrl,
     [string]$DesignerPath,
     [string]$EdtCliPath,
     [string]$EdtIniFile,
@@ -45,6 +46,9 @@ $secret = $null
 $repositorySecret = $null
 . (Join-Path $PSScriptRoot 'Native-Tools.ps1')
 . (Join-Path $PSScriptRoot 'Select-Extensions.ps1')
+. (Join-Path $PSScriptRoot 'Project-Git.ps1')
+$inPlace=$false;$initializationLock=$null;$initializationLockPath=$null;$projectPublished=$false
+$interactiveRun=-not $PSBoundParameters.ContainsKey('InfobaseType')
 $interactiveExtensions=$SelectExtensions -or (-not $PSBoundParameters.ContainsKey('InfobaseType') -and -not $Extensions -and -not $NoExtensions)
 
 function Resolve-Executable([string]$Value) {
@@ -140,11 +144,16 @@ function Import-Edt([string]$Xml,[string]$Name,[string]$Destination,[string]$Bas
 try {
     if (-not $InfobaseType) { $InfobaseType = Read-Host 'Source type (File/Server/Repository)'; if ($InfobaseType -notin @('File','Server','Repository')) { throw 'Expected File, Server or Repository' } }
     if (-not $Infobase) { $Infobase = Read-Host 'Infobase path or server\name' }
-    if (-not $TargetDirectory) { $TargetDirectory = Read-Host 'New Git project directory' }
+    if (-not $TargetDirectory) {
+        if (-not $TemplateDirectory) { $TemplateDirectory=Split-Path $PSScriptRoot -Parent }
+        $TargetDirectory=$TemplateDirectory
+        $inPlace=$true
+    }
     if (-not $DesignerPath) { $DesignerPath = Read-Host 'Full path to 1cv8.exe' }
     if (-not $EdtCliPath) { $EdtCliPath = Read-Host 'Full path to 1cedtcli.exe' }
     foreach ($value in @($Infobase,$TargetDirectory,$DesignerPath,$EdtCliPath,$ProjectName,$UserName,$RepositoryUserName)) { Assert-SingleLine $value 'Parameter' }
     Assert-ProjectName $ProjectName
+    if ($ProjectRemoteUrl) { Assert-ProjectRemote $ProjectRemoteUrl }
     if ($NoExtensions -and $Extensions) { throw 'Use Extensions or NoExtensions, not both.' }
     if ($SelectExtensions -and ($NoExtensions -or $Extensions)) { throw 'SelectExtensions conflicts with Extensions and NoExtensions.' }
     $DesignerPath = Resolve-Executable $DesignerPath
@@ -160,7 +169,12 @@ try {
         $connectionOption = '/F'
     } else { $connectionOption = '/S' }
     $TargetDirectory = [IO.Path]::GetFullPath($TargetDirectory)
-    if (Test-Path -LiteralPath $TargetDirectory) { throw 'TargetDirectory already exists. Choose a new directory; existing files are never overwritten.' }
+    if ($TemplateDirectory -and (Test-Path -LiteralPath $TemplateDirectory)) {
+        $TemplateDirectory=(Get-Item -LiteralPath $TemplateDirectory).FullName
+        if ($TargetDirectory.TrimEnd('\','/') -eq $TemplateDirectory.TrimEnd('\','/')) { $inPlace=$true }
+    }
+    if ($inPlace) { $originalState=Get-InPlaceState $GitPath $TargetDirectory }
+    elseif (Test-Path -LiteralPath $TargetDirectory) { throw 'TargetDirectory already exists. Choose a new directory; existing files are never overwritten.' }
     $parent = Split-Path -Parent $TargetDirectory
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Target parent directory must exist.' }
     $repositories=@()
@@ -213,7 +227,20 @@ try {
     $workspace = Join-Path $work 'edt-workspace'
     $staging = Join-Path $work 'repository'
     $templateCommit = $null
-    if ($TemplateDirectory) {
+    if ($inPlace) {
+        $initializationLockPath=Join-Path $originalState.gitDirectory 'project-initialization.lock'
+        $initializationLock=[IO.File]::Open($initializationLockPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        [void](Run-Native $GitPath @('clone','--no-hardlinks','--single-branch','--branch',$originalState.branch,$TargetDirectory,$staging) 'clone-project')
+        if ((Run-Native $GitPath @('-C',$staging,'rev-parse','HEAD') 'clone-head') -ne $originalState.head) { throw 'Repository changed during initialization.' }
+        # Fixed paths inside the newly created staging repository only.
+        if (-not ([IO.Path]::GetFullPath($staging)).StartsWith([IO.Path]::GetFullPath($work)+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe staging path.' }
+        [void](Run-Native $GitPath @('-C',$staging,'rm','-r','--ignore-unmatch','--','src/cf','src/cfe') 'remove-placeholders')
+        $templateCommit=$originalState.head
+        foreach ($setting in @('user.name','user.email')) {
+            $value=& $GitPath -C $TargetDirectory config $setting
+            if ($LASTEXITCODE -eq 0 -and $value) { [void](Run-Native $GitPath @('-C',$staging,'config','--local',$setting,[string]$value) ('copy-'+$setting)) }
+        }
+    } elseif ($TemplateDirectory) {
         $TemplateDirectory = (Get-Item -LiteralPath $TemplateDirectory).FullName
         if (Run-Native $GitPath @('-C',$TemplateDirectory,'status','--porcelain') 'template-clean') { throw 'Commit template changes before initialization.' }
         $templateCommit = Run-Native $GitPath @('-C',$TemplateDirectory,'rev-parse','HEAD') 'template-version'
@@ -230,7 +257,7 @@ try {
         }
     }
     [void][IO.Directory]::CreateDirectory((Join-Path $staging 'src\cfe'))
-    [void](Run-Native $GitPath @('-C',$staging,'init','--initial-branch=main') 'git-init')
+    if (-not $inPlace) { [void](Run-Native $GitPath @('-C',$staging,'init','--initial-branch=main') 'git-init') }
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.autocrlf','true') 'git-windows-line-endings')
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.safecrlf','true') 'git-safe-line-endings')
     if (-not $NoGitLfs) {
@@ -240,6 +267,7 @@ try {
     $gitIdentity = @()
     if ($GitUserName) { $gitIdentity += @('-c',('user.name='+$GitUserName)) }
     if ($GitUserEmail) { $gitIdentity += @('-c',('user.email='+$GitUserEmail)) }
+    if ($inPlace -and $SkipInitialCommit) { $gitIdentity=@('-c','user.name=Project initializer','-c','user.email=initializer@localhost') }
     if (-not $SkipInitialCommit) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'var','GIT_AUTHOR_IDENT')) 'git-check-identity') }
     $xmlMain = Join-Path $work 'xml-configuration'
     if ($InfobaseType -eq 'Repository') {
@@ -334,9 +362,36 @@ try {
         Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $staging $relative) -Force
     }
     [void](Run-Native $GitPath @('-C',$staging,'add','--all') 'git-verify-line-endings')
-    if (-not $SkipInitialCommit) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'commit','-m','Initialize EDT projects from infobase')) 'git-commit') }
+    if (-not $SkipInitialCommit -or $inPlace) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'commit','-m','Initialize EDT projects from source')) 'git-commit') }
     # Publish only after all exports, imports and Git operations succeeded.
-    Move-Item -LiteralPath $staging -Destination $TargetDirectory
+    if ($inPlace) {
+        $current=Get-InPlaceState $GitPath $TargetDirectory
+        if ($current.head -ne $originalState.head -or $current.branch -ne $originalState.branch) { throw 'Repository changed before publication; original project was not updated.' }
+        $prepared=Run-Native $GitPath @('-C',$staging,'rev-parse','HEAD') 'prepared-head'
+        Set-ProjectGit $GitPath $TargetDirectory $GitUserName $GitUserEmail ([bool]$NoGitLfs)
+        $objects=Join-Path $staging '.git/lfs/objects'
+        if (Test-Path -LiteralPath $objects) {
+            $destination=Join-Path $originalState.gitDirectory 'lfs/objects'
+            [void][IO.Directory]::CreateDirectory($destination)
+            foreach ($file in Get-ChildItem -LiteralPath $objects -Recurse -File) {
+                $relative=$file.FullName.Substring($objects.Length).TrimStart('\','/')
+                $output=Join-Path $destination $relative
+                [void][IO.Directory]::CreateDirectory((Split-Path $output -Parent))
+                if (Test-Path -LiteralPath $output) {
+                    if ((Get-FileHash -LiteralPath $output).Hash -ne (Get-FileHash -LiteralPath $file.FullName).Hash) { throw 'Existing LFS object differs; publication stopped.' }
+                } else { Copy-Item -LiteralPath $file.FullName -Destination $output }
+            }
+        }
+        [void](Run-Native $GitPath @('-C',$TargetDirectory,'fetch','--no-tags','--no-write-fetch-head',$staging,$prepared) 'fetch-prepared')
+        $merge=if ($SkipInitialCommit) { @('merge','--squash',$prepared) } else { @('merge','--ff-only','--no-edit',$prepared) }
+        [void](Run-Native $GitPath (@('-C',$TargetDirectory)+$merge) 'publish-project')
+    } else { Move-Item -LiteralPath $staging -Destination $TargetDirectory }
+    $projectPublished=$true
+    if ($ProjectRemoteUrl) { Set-ProjectRemote $GitPath $TargetDirectory $ProjectRemoteUrl }
+    elseif ($inPlace -and $interactiveRun) {
+        $remote=Read-Host 'Project Git URL (empty: keep current origin; configure it before pushing)'
+        if ($remote) { Set-ProjectRemote $GitPath $TargetDirectory $remote }
+    }
     Write-Host "Created: $TargetDirectory"
     Write-Host "Diagnostics and intermediate exports: $work"
     if ($RegisterEdtStart) {
@@ -348,6 +403,10 @@ try {
     } else { Write-Host 'Open EDT: Import existing projects from the repository. Configure a personal debug infobase separately.' }
 } catch {
     $message = Protect-Text $_.Exception.Message
+    if ($projectPublished) { Write-Host "Project initialization is already applied at $TargetDirectory; finish Git/EDT setup separately." }
     if (Get-Variable work -ErrorAction SilentlyContinue) { Write-Host "Diagnostics: $work" }
     throw $message
-} finally { $secret = $null; $Password = $null; $repositorySecret = $null; $RepositoryPassword = $null }
+} finally {
+    if ($initializationLock) { $initializationLock.Dispose();Remove-Item -LiteralPath $initializationLockPath }
+    $secret = $null; $Password = $null; $repositorySecret = $null; $RepositoryPassword = $null
+}

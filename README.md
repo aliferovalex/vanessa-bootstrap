@@ -3,8 +3,9 @@
 Форк [vanessa-opensource/vanessa-bootstrap](https://github.com/vanessa-opensource/vanessa-bootstrap)
 с инициализацией из базы или хранилищ 1С, Git LFS и сборкой CF/CFE из EDT.
 
-Шаблон клонируется отдельно. Инициализатор создаёт **новый проект в другом
-каталоге**, с собственной историей Git, без перезаписи существующего проекта.
+Основной сценарий: клонируйте форк в каталог своего проекта и запустите
+инициализатор **в этом же каталоге**. Существующие `.git`, ветка и история
+сохраняются; исходники добавляются отдельным коммитом инициализации.
 
 ## Требования
 
@@ -22,13 +23,13 @@ vanessa-runner 3.x пока не поддерживается: его коман
 ## Установка и быстрый запуск
 
 ```powershell
-git clone https://github.com/aliferovalex/vanessa-bootstrap.git
-cd vanessa-bootstrap
+git clone https://github.com/aliferovalex/vanessa-bootstrap.git Demo
+cd Demo
 .\initialize.cmd -AskCredential
 ```
 
 Скрипт запросит тип источника (`File`, `Server`, `Repository`), его адрес,
-**новый** каталог проекта и пути к Конфигуратору и EDT CLI. Учётные данные
+пути к Конфигуратору и EDT CLI. Каталог проекта — корень клонированного репозитория. Учётные данные
 запрашиваются для базы или хранилища в зависимости от выбранного источника.
 Для Java можно указать отдельный ini-файл через `-EdtIniFile`.
 
@@ -48,7 +49,6 @@ $options = @{
     TemplateDirectory = (Get-Location).Path
     InfobaseType = 'File'
     Infobase = 'D:\Bases\Demo'
-    TargetDirectory = 'D:\Projects\Demo'
     ProjectName = 'Demo'
     DesignerPath = 'C:\Program Files\1cv8\8.5.1.1529\bin\1cv8.exe'
     EdtCliPath = 'D:\EDT\1cedtcli.exe'
@@ -71,7 +71,6 @@ $options = @{
 .\initialize.cmd -InfobaseType Repository `
     -Infobase 'https://server/repo/repo.1ccr/Main' `
     -RepositoryVersion 12 `
-    -TargetDirectory 'D:\Projects\Demo' `
     -ProjectName Demo `
     -DesignerPath 'C:\Program Files\1cv8\8.5.1.1529\bin\1cv8.exe' `
     -EdtCliPath 'D:\EDT\1cedtcli.exe' `
@@ -113,15 +112,32 @@ Demo/
 Git LFS настраивается до первого добавления исходников; отключение: `-NoGitLfs`.
 Правила окончаний строк сохраняются. Глобальные настройки Git не меняются.
 
-Новый репозиторий получает ветку `main`, собственный начальный коммит и не имеет
-remote. Для отказа от первого коммита есть `-SkipInitialCommit`. Свой сервер Git
-подключите в созданном проекте, указав настоящий адрес с поддержкой LFS:
+При инициализации на месте сохраняются история, текущая ветка и remotes.
+`-SkipInitialCommit` оставляет подготовленные изменения в индексе без нового
+коммита. При интерактивном запуске скрипт предложит адрес Git проекта.
+Для настройки адреса отдельно используйте команду ниже; прежний `origin`
+сохраняется как `bootstrap`, затем `origin` указывает на ваш проект:
 
 ```powershell
 cd D:\Projects\Demo
-git remote add origin https://git.example.org/team/demo.git
-git push -u origin main
+.\tools\git-project-init.cmd -ProjectRemoteUrl https://git.example.org/team/demo.git
+git push -u origin HEAD
 ```
+
+Перед началом рабочая копия должна быть чистой, `project-init.json` должен
+отсутствовать, а `src/cf` и `src/cfe` могут содержать только заглушки шаблона.
+Выгрузка и подготовка коммита выполняются вне проекта; перед применением повторно
+проверяются ветка и HEAD. Готовый коммит применяется только fast-forward.
+
+Для создания проекта отдельно передайте `-TargetDirectory D:\Projects\Other`.
+Этот каталог должен отсутствовать; результат получит новую ветку `main`, новую
+историю и не будет иметь remote. Исходный клон в этом режиме не меняется.
+
+`tools/git-project-init.cmd` также настраивает Git только для проекта:
+`quotepath=false`, `autocrlf=true`, `safecrlf=true`, `longpaths=true` и Git LFS.
+Имя/email берутся из существующих настроек или параметров `-GitUserName` и
+`-GitUserEmail`. Глобальные настройки, алиасы и `http.postBuffer` не меняются.
+Старое имя `tools/git-global-init.cmd` теперь вызывает эту локальную настройку.
 
 Для регистрации рабочей области добавьте `-RegisterEdtStart`; если лаунчер
 запущен — закройте его или добавьте `-RestartEdtStart`. База отладки настраивается
@@ -157,7 +173,9 @@ shell-скрипты сохраняют прежний XML-сценарий upst
 
 ## Обновление и диагностика
 
-Обновление локального шаблона: `git pull --ff-only origin master`.
+До инициализации клон форка обновляется командой `git pull --ff-only origin master`.
+После настройки Git проекта `origin` принадлежит проекту; обновления шаблона
+получайте через `bootstrap` и проверяйте перед слиянием.
 Для разработки форка можно добавить исходный репозиторий:
 
 ```powershell

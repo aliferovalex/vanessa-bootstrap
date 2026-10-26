@@ -16,6 +16,7 @@ param(
     [string]$TemplateDirectory,
     [string]$ProjectRemoteUrl,
     [string]$GitBranch,
+    [switch]$FreshHistory,
     [string]$DesignerPath,
     [string]$EdtCliPath,
     [string]$EdtIniFile,
@@ -49,6 +50,7 @@ $repositorySecret = $null
 . (Join-Path $PSScriptRoot 'Native-Tools.ps1')
 . (Join-Path $PSScriptRoot 'Select-Extensions.ps1')
 . (Join-Path $PSScriptRoot 'Project-Git.ps1')
+. (Join-Path $PSScriptRoot 'Fresh-History.ps1')
 $inPlace=$false;$initializationLock=$null;$initializationLockPath=$null;$projectPublished=$false
 $interactiveRun=-not $PSBoundParameters.ContainsKey('InfobaseType')
 $interactiveExtensions=$SelectExtensions -or (-not $PSBoundParameters.ContainsKey('InfobaseType') -and -not $Extensions -and -not $NoExtensions)
@@ -179,12 +181,13 @@ try {
     elseif (Test-Path -LiteralPath $TargetDirectory) { throw 'TargetDirectory already exists. Choose a new directory; existing files are never overwritten.' }
     $parent = Split-Path -Parent $TargetDirectory
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Target parent directory must exist.' }
-    $defaultBranch=if ($inPlace) { $originalState.branch } else { 'main' }
+    if ($inPlace -and $FreshHistory) { Assert-FreshHistoryRepository $GitPath $TargetDirectory $originalState }
+    $defaultBranch=if ($inPlace -and -not $FreshHistory) { $originalState.branch } else { 'main' }
     if (-not $GitBranch -and $interactiveRun -and -not $Preview) {
         $GitBranch=Read-Host ("Git branch [$defaultBranch]")
     }
     if (-not $GitBranch) { $GitBranch=$defaultBranch }
-    Assert-InitializationBranch $GitPath $(if($inPlace){$TargetDirectory}else{$parent}) $GitBranch $(if($inPlace){$originalState.branch}else{''})
+    Assert-InitializationBranch $GitPath $(if($inPlace){$TargetDirectory}else{$parent}) $GitBranch $(if($inPlace -and -not $FreshHistory){$originalState.branch}else{''})
     $repositories=@()
     if ($InfobaseType -eq 'Repository') {
         if ($RepositoryVersion -eq 0 -or $UserName -or $Password) { throw 'Use repository credentials and version -1 or a positive version.' }
@@ -217,7 +220,7 @@ try {
         $UserName = $credential.UserName; $Password = $credential.Password
     }
     if ($Preview) {
-        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
+        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
         return
     }
     if ($UserName -and -not $Password) { $Password = Read-Host 'Infobase password (empty allowed)' -AsSecureString }
@@ -238,6 +241,8 @@ try {
     if ($inPlace) {
         $initializationLockPath=Join-Path $originalState.gitDirectory 'project-initialization.lock'
         $initializationLock=[IO.File]::Open($initializationLockPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    }
+    if ($inPlace -and -not $FreshHistory) {
         [void](Run-Native $GitPath @('clone','--no-hardlinks','--single-branch','--branch',$originalState.branch,$TargetDirectory,$staging) 'clone-project')
         if ((Run-Native $GitPath @('-C',$staging,'rev-parse','HEAD') 'clone-head') -ne $originalState.head) { throw 'Repository changed during initialization.' }
         # Fixed paths inside the newly created staging repository only.
@@ -265,7 +270,7 @@ try {
         }
     }
     [void][IO.Directory]::CreateDirectory((Join-Path $staging 'src\cfe'))
-    if (-not $inPlace) { [void](Run-Native $GitPath @('-C',$staging,'init',('--initial-branch='+$GitBranch)) 'git-init') }
+    if (-not $inPlace -or $FreshHistory) { [void](Run-Native $GitPath @('-C',$staging,'init',('--initial-branch='+$GitBranch)) 'git-init') }
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.autocrlf','true') 'git-windows-line-endings')
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.safecrlf','true') 'git-safe-line-endings')
     if (-not $NoGitLfs) {
@@ -275,7 +280,7 @@ try {
     $gitIdentity = @()
     if ($GitUserName) { $gitIdentity += @('-c',('user.name='+$GitUserName)) }
     if ($GitUserEmail) { $gitIdentity += @('-c',('user.email='+$GitUserEmail)) }
-    if ($inPlace -and $SkipInitialCommit) { $gitIdentity=@('-c','user.name=Project initializer','-c','user.email=initializer@localhost') }
+    if ($inPlace -and -not $FreshHistory -and $SkipInitialCommit) { $gitIdentity=@('-c','user.name=Project initializer','-c','user.email=initializer@localhost') }
     if (-not $SkipInitialCommit) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'var','GIT_AUTHOR_IDENT')) 'git-check-identity') }
     $xmlMain = Join-Path $work 'xml-configuration'
     if ($InfobaseType -eq 'Repository') {
@@ -370,11 +375,19 @@ try {
         Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $staging $relative) -Force
     }
     [void](Run-Native $GitPath @('-C',$staging,'add','--all') 'git-verify-line-endings')
-    if (-not $SkipInitialCommit -or $inPlace) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'commit','-m','Initialize EDT projects from source')) 'git-commit') }
+    if (-not $SkipInitialCommit -or ($inPlace -and -not $FreshHistory)) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'commit','-m','Initialize EDT projects from source')) 'git-commit') }
     # Publish only after all exports, imports and Git operations succeeded.
     if ($inPlace) {
         $current=Get-InPlaceState $GitPath $TargetDirectory
         if ($current.head -ne $originalState.head -or $current.branch -ne $originalState.branch) { throw 'Repository changed before publication; original project was not updated.' }
+        if ($FreshHistory) {
+            Assert-FreshHistoryRepository $GitPath $TargetDirectory $current
+            Set-ProjectGit $GitPath $staging $GitUserName $GitUserEmail ([bool]$NoGitLfs)
+            $initializationLock.Dispose();$initializationLock=$null
+            Remove-Item -LiteralPath $initializationLockPath
+            $backup=Publish-FreshHistory -Git $GitPath -Repository $TargetDirectory -Staging $staging -Work $work -SkipCommit ([bool]$SkipInitialCommit)
+            Write-Host "Original Git history backup: $backup"
+        } else {
         $prepared=Run-Native $GitPath @('-C',$staging,'rev-parse','HEAD') 'prepared-head'
         Set-ProjectGit $GitPath $TargetDirectory $GitUserName $GitUserEmail ([bool]$NoGitLfs)
         $objects=Join-Path $staging '.git/lfs/objects'
@@ -399,6 +412,7 @@ try {
         if ($GitBranch -eq $originalState.branch -or $SkipInitialCommit) {
             $merge=if ($SkipInitialCommit) { @('merge','--squash',$prepared) } else { @('merge','--ff-only','--no-edit',$prepared) }
             [void](Run-Native $GitPath (@('-C',$TargetDirectory)+$merge) 'publish-project')
+        }
         }
     } else { Move-Item -LiteralPath $staging -Destination $TargetDirectory }
     $projectPublished=$true

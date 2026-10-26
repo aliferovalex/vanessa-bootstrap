@@ -31,9 +31,9 @@ $refs=& git -C $pending for-each-ref --format='%(refname)'
 Assert (-not $refs -and [bool](& git -C $pending diff --cached --name-only)) 'Fresh staged-only mode retained references or lost changes'
 $rollback=Clone 'rollback';$old=& git -C $rollback rev-parse HEAD
 function Move-Item {
-    param([string]$LiteralPath,[string]$Destination)
+    param([string]$LiteralPath,[string]$Destination,[switch]$Force)
     if ($LiteralPath -like '*\repository\.git') { throw 'Simulated Git installation failure' }
-    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination
+    Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
 }
 try {$failed=$false;try { & $script @common -TemplateDirectory $rollback } catch {$failed=$true}}
 finally {Remove-Item Function:\Move-Item}

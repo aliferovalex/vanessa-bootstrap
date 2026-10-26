@@ -3,7 +3,7 @@ function Assert-FreshHistoryRepository([string]$Git,[string]$Repository,[object]
     $path=Join-Path $Repository '.git'
     if (-not (Test-Path -LiteralPath $path -PathType Container) -or
         [IO.Path]::GetFullPath($State.gitDirectory).TrimEnd('\','/') -ne [IO.Path]::GetFullPath($path).TrimEnd('\','/') -or
-        ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw 'FreshHistory requires a standalone clone, not a linked worktree.'
     }
     $trees=Invoke-InitGit $Git $Repository @('worktree','list','--porcelain')
@@ -46,9 +46,9 @@ function Publish-FreshHistory {
         }
         $originalGit=Join-Path $Repository '.git';$backupGit=Join-Path $backup '.git';$stageGit=Join-Path $Staging '.git'
         Check-Path $originalGit $root;Check-Path $backupGit $scratch;Check-Path $stageGit $stage
-        Move-Item -LiteralPath $originalGit -Destination $backupGit
+        Move-Item -LiteralPath $originalGit -Destination $backupGit -Force
         $oldGitMoved=$true;Journal 'git-backed-up'
-        Move-Item -LiteralPath $stageGit -Destination $originalGit
+        Move-Item -LiteralPath $stageGit -Destination $originalGit -Force
         $newGitMoved=$true;Journal 'git-installed'
         if (-not $SkipCommit -and (Invoke-InitGit $Git $Repository @('status','--porcelain'))) { throw 'Fresh repository verification failed.' }
         Journal 'complete'
@@ -56,8 +56,8 @@ function Publish-FreshHistory {
     } catch {
         $failure=$_.Exception.Message
         try {
-            if ($newGitMoved) { Move-Item -LiteralPath (Join-Path $Repository '.git') -Destination (Join-Path $Staging '.git') }
-            if ($oldGitMoved) { Move-Item -LiteralPath (Join-Path $backup '.git') -Destination (Join-Path $Repository '.git') }
+            if ($newGitMoved) { Move-Item -LiteralPath (Join-Path $Repository '.git') -Destination (Join-Path $Staging '.git') -Force }
+            if ($oldGitMoved) { Move-Item -LiteralPath (Join-Path $backup '.git') -Destination (Join-Path $Repository '.git') -Force }
             [array]::Reverse($installed)
             foreach ($relative in $installed) { Move-Item -LiteralPath (Join-Path $Repository $relative) -Destination (Join-Path $Staging $relative) }
             foreach ($relative in $saved) { Move-Item -LiteralPath (Join-Path $backup $relative) -Destination (Join-Path $Repository $relative) }

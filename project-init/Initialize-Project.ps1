@@ -35,6 +35,7 @@ param(
     [switch]$SelectExtensions,
     [switch]$NoExtensions,
     [switch]$AskCredential,
+    [switch]$UseOSAuthentication,
     [switch]$Preview,
     [switch]$SkipInitialCommit,
     [switch]$NoGitLfs,
@@ -52,6 +53,7 @@ $repositorySecret = $null
 . (Join-Path $PSScriptRoot 'Project-Git.ps1')
 . (Join-Path $PSScriptRoot 'Fresh-History.ps1')
 . (Join-Path $PSScriptRoot 'Credentials.ps1')
+. (Join-Path $PSScriptRoot 'Source-Selection.ps1')
 $inPlace=$false;$initializationLock=$null;$initializationLockPath=$null;$projectPublished=$false
 $interactiveRun=-not $PSBoundParameters.ContainsKey('InfobaseType')
 $interactiveExtensions=$SelectExtensions -or (-not $PSBoundParameters.ContainsKey('InfobaseType') -and -not $Extensions -and -not $NoExtensions)
@@ -117,6 +119,8 @@ function Export-Xml([string]$Directory,[string]$Label,[switch]$AllExtensions) {
     $log = Join-Path $work ($Label+'.designer.log')
     $arguments = @('DESIGNER',$connectionOption,$Infobase,'/DisableStartupDialogs','/DisableStartupMessages','/DumpConfigToFiles',$Directory)
     if ($AllExtensions) { $arguments += '-AllExtensions' }
+    if ($UseOSAuthentication) { $arguments += '/WA+' }
+    elseif ($UserName -or $Password) { $arguments += '/WA-' }
     if ($UserName) { $arguments += @('/N',$UserName) }
     if ($secret) { $arguments += @('/P',$secret) }
     if ($RepositoryUserName) { $arguments += @('/ConfigurationRepositoryN',$RepositoryUserName,'/ConfigurationRepositoryP',[string]$repositorySecret) }
@@ -147,7 +151,13 @@ function Import-Edt([string]$Xml,[string]$Name,[string]$Destination,[string]$Bas
 }
 
 try {
-    if (-not $InfobaseType) { $InfobaseType = Read-Host 'Source type (File/Server/Repository)'; if ($InfobaseType -notin @('File','Server','Repository')) { throw 'Expected File, Server or Repository' } }
+    if (-not $InfobaseType) { $InfobaseType = Select-ProjectSourceType }
+    if ($UseOSAuthentication) {
+        if ($InfobaseType -eq 'Repository') { throw 'UseOSAuthentication requires a File or Server infobase; repository accounts use RepositoryUserName.' }
+        if ($AskCredential -or $PSBoundParameters.ContainsKey('UserName') -or $PSBoundParameters.ContainsKey('Password')) {
+            throw 'UseOSAuthentication cannot be combined with AskCredential, UserName or Password.'
+        }
+    }
     if (-not $Infobase) { $Infobase = Read-Host 'Infobase path or server\name' }
     if (-not $TargetDirectory) {
         if (-not $TemplateDirectory) { $TemplateDirectory=Split-Path $PSScriptRoot -Parent }
@@ -221,7 +231,7 @@ try {
         $UserName = $credential.UserName; $Password = $credential.Password
     }
     if ($Preview) {
-        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
+        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;InfobaseAuthentication=$(if($UseOSAuthentication){'OS'}elseif($AskCredential -or $UserName -or $Password){'Infobase'}else{'Default'});Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
         return
     }
     if ($UserName -and -not $Password) { $Password = Read-Host 'Infobase password (empty allowed)' -AsSecureString }

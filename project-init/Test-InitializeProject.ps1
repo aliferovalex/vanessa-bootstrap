@@ -18,6 +18,9 @@ class Tool {
    string expectedUser=Environment.GetEnvironmentVariable("INIT_TEST_USER");
    string expectedPassword=Environment.GetEnvironmentVariable("INIT_TEST_PASSWORD");
    if(expectedUser!=null && (Value(a,"/N")!=expectedUser || (Value(a,"/P")??"")!=(expectedPassword??""))) return 33;
+   string authentication=Environment.GetEnvironmentVariable("INIT_TEST_AUTH");
+   if(authentication!=null && !a.Contains(authentication)) return 34;
+   if(authentication=="/WA+" && (a.Contains("/N") || a.Contains("/P"))) return 35;
    string dir=Value(a,"/DumpConfigToFiles");
    if(a.Contains("-AllExtensions")){Xml(Path.Combine(dir,"ExtOne"),"ExtOne"); Xml(Path.Combine(dir,"ExtTwo"),"ExtTwo");}
    else Xml(dir,"Configuration");
@@ -111,9 +114,10 @@ try {
  Assert ($interactiveManifest.extensions.Count -eq 1 -and $interactiveManifest.extensions[0].name -eq 'ExtTwo') 'Interactive selection imported wrong extensions'
  Assert (-not(Test-Path (Join-Path $interactiveTarget 'src/cfe/ExtOne'))) 'Unselected project was imported'
 } finally { Remove-Item Function:\Read-Host }
-$oldUser=$env:INIT_TEST_USER;$oldPassword=$env:INIT_TEST_PASSWORD
+$oldUser=$env:INIT_TEST_USER;$oldPassword=$env:INIT_TEST_PASSWORD;$oldAuth=$env:INIT_TEST_AUTH
 try {
  $env:INIT_TEST_USER='1C test user'
+ $env:INIT_TEST_AUTH='/WA-'
  function Read-Host {
   param($Prompt,[switch]$AsSecureString)
   if($AsSecureString){
@@ -134,5 +138,43 @@ try {
 } finally {
  Remove-Item Function:\Read-Host
  $env:INIT_TEST_USER=$oldUser;$env:INIT_TEST_PASSWORD=$oldPassword
+ $env:INIT_TEST_AUTH=$oldAuth
 }
+$oldAuth=$env:INIT_TEST_AUTH
+try {
+ $env:INIT_TEST_AUTH='/WA+'
+ function Read-Host { param($Prompt,[switch]$AsSecureString) throw 'OS authentication must not prompt for credentials.' }
+ foreach($sourceType in @('File','Server')) {
+  $osOptions=$common.Clone();$osOptions.InfobaseType=$sourceType
+  if($sourceType -eq 'Server'){$osOptions.Infobase='test-server:7541\test-base'}
+  $osTarget=Join-Path $TestRoot ('os-auth-'+$sourceType)
+  $osPreview=& $script @osOptions -TargetDirectory $osTarget -UseOSAuthentication -Preview
+  Assert ($osPreview.InfobaseAuthentication -eq 'OS') 'Preview does not show OS authentication.'
+  & $script @osOptions -TargetDirectory $osTarget -UseOSAuthentication -Extensions ExtTwo -NoGitLfs
+  Assert (Test-Path (Join-Path $osTarget 'src/cfe/ExtTwo/.project')) 'OS-authenticated extension export failed.'
+ }
+ foreach($conflict in @(@{AskCredential=$true},@{UserName='user'},@{Password=(New-Object Security.SecureString)})) {
+  $failed=$false
+  try { & $script @common @conflict -TargetDirectory (Join-Path $TestRoot 'conflict') -UseOSAuthentication -Preview } catch {
+   $failed=$_.Exception.Message -like 'UseOSAuthentication cannot be combined*'
+  }
+  Assert $failed 'Conflicting authentication options accepted.'
+ }
+ $failed=$false
+ try { & $script -InfobaseType Repository -UseOSAuthentication } catch { $failed=$_.Exception.Message -like 'UseOSAuthentication requires*' }
+ Assert $failed 'OS authentication accepted for a repository account.'
+} finally { Remove-Item Function:\Read-Host; $env:INIT_TEST_AUTH=$oldAuth }
+Write-Host 'PASS: OS authentication for File/Server, main and extension exports, preview, explicit 1C authentication, invalid combinations.'
+function Read-Host { param($Prompt) if($Prompt -like 'Source number*'){return $sourceNumber}; throw 'Unexpected source menu prompt.' }
+try {
+ foreach($entry in @(@('1','File'),@('2','Server'),@('3','Repository'))) {
+  $script:sourceNumber=$entry[0]
+  $menuOptions=$common.Clone();$menuOptions.Remove('InfobaseType')
+  if($entry[1] -eq 'Repository'){$menuOptions.Infobase='tcp://test-server:1543/test-repository'}
+  elseif($entry[1] -eq 'Server'){$menuOptions.Infobase='test-server:7541\test-base'}
+  $menuPreview=& $script @menuOptions -TargetDirectory (Join-Path $TestRoot 'menu-preview') -GitBranch main -Preview
+  Assert ($menuPreview.SourceType -eq $entry[1]) 'Menu selection not applied to initializer.'
+ }
+} finally { Remove-Item Function:\Read-Host }
+Write-Host 'PASS: interactive source selection applied to File, Server and Repository initialization.'
 Write-Host "PASS: preview, selected extension, base association, Git commit, LFS initial objects and hooks, opt-out, existing target, missing extension, failed import, interactive selection, console credentials with empty/special passwords. Artifacts: $TestRoot"

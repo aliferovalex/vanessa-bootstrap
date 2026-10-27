@@ -21,6 +21,8 @@ class Tool {
    string authentication=Environment.GetEnvironmentVariable("INIT_TEST_AUTH");
    if(authentication!=null && !a.Contains(authentication)) return 34;
    if(authentication=="/WA+" && (a.Contains("/N") || a.Contains("/P"))) return 35;
+   string repositoryUser=Environment.GetEnvironmentVariable("INIT_TEST_REPO_USER");
+   if(repositoryUser!=null && (Value(a,"/ConfigurationRepositoryN")!=repositoryUser || Value(a,"/ConfigurationRepositoryP")!=Environment.GetEnvironmentVariable("INIT_TEST_REPO_PASSWORD"))) return 36;
    string dir=Value(a,"/DumpConfigToFiles");
    if(a.Contains("-AllExtensions")){Xml(Path.Combine(dir,"ExtOne"),"ExtOne"); Xml(Path.Combine(dir,"ExtTwo"),"ExtTwo");}
    else Xml(dir,"Configuration");
@@ -177,4 +179,30 @@ try {
  }
 } finally { Remove-Item Function:\Read-Host }
 Write-Host 'PASS: interactive source selection applied to File, Server and Repository initialization.'
+$oldRepoUser=$env:INIT_TEST_REPO_USER;$oldRepoPassword=$env:INIT_TEST_REPO_PASSWORD
+$oldUser=$env:INIT_TEST_USER;$oldPassword=$env:INIT_TEST_PASSWORD;$oldAuth=$env:INIT_TEST_AUTH
+try {
+ $env:INIT_TEST_REPO_USER='repository user';$env:INIT_TEST_REPO_PASSWORD='synthetic repo password'
+ function Read-Host {
+  param($Prompt,[switch]$AsSecureString)
+  if($Prompt -like 'Repository user name*'){return $env:INIT_TEST_REPO_USER}
+  if($Prompt -like 'Infobase user name*'){return $env:INIT_TEST_USER}
+  if($AsSecureString){
+   $text=if($Prompt -like 'Repository password*'){$env:INIT_TEST_REPO_PASSWORD}else{$env:INIT_TEST_PASSWORD}
+   return (ConvertTo-SecureString $text -AsPlainText -Force)
+  }
+  throw 'Unexpected authentication prompt'
+ }
+ foreach($mode in @('OS','Infobase')){
+  $authOptions=@{AskRepositoryCredential=$true}
+  if($mode -eq 'OS'){$authOptions.UseOSAuthentication=$true;$env:INIT_TEST_AUTH='/WA+';$env:INIT_TEST_USER=$null}
+  else{$authOptions.AskCredential=$true;$env:INIT_TEST_AUTH='/WA-';$env:INIT_TEST_USER='infobase user';$env:INIT_TEST_PASSWORD='synthetic infobase password'}
+  & $script @common @authOptions -TargetDirectory (Join-Path $TestRoot ('repo-credentials-'+$mode)) -Extensions ExtTwo -NoGitLfs
+ }
+} finally {
+ Remove-Item Function:\Read-Host
+ $env:INIT_TEST_REPO_USER=$oldRepoUser;$env:INIT_TEST_REPO_PASSWORD=$oldRepoPassword
+ $env:INIT_TEST_USER=$oldUser;$env:INIT_TEST_PASSWORD=$oldPassword;$env:INIT_TEST_AUTH=$oldAuth
+}
+Write-Host 'PASS: separate repository credentials with OS and infobase authentication, main and extension exports.'
 Write-Host "PASS: preview, selected extension, base association, Git commit, LFS initial objects and hooks, opt-out, existing target, missing extension, failed import, interactive selection, console credentials with empty/special passwords. Artifacts: $TestRoot"

@@ -35,6 +35,7 @@ param(
     [switch]$SelectExtensions,
     [switch]$NoExtensions,
     [switch]$AskCredential,
+    [switch]$AskRepositoryCredential,
     [switch]$UseOSAuthentication,
     [switch]$Preview,
     [switch]$SkipInitialCommit,
@@ -128,6 +129,9 @@ function Export-Xml([string]$Directory,[string]$Label,[switch]$AllExtensions) {
     try { [void](Run-Native $DesignerPath $arguments $Label) } catch {
         $reason = $_.Exception.Message
         if (Test-Path -LiteralPath $log) { $reason += "`n" + (Protect-Text ([IO.File]::ReadAllText($log))) }
+        if ($reason -match '(?is)(\u0445\u0440\u0430\u043d\u0438\u043b\u0438\u0449|configuration repository)') {
+            $reason+="`nRepository authentication is separate from infobase/Windows authentication. Use -AskRepositoryCredential or -RepositoryUserName; check the repository login and password in Designer."
+        }
         throw $reason
     } finally {
         if (Test-Path -LiteralPath $log) {
@@ -223,10 +227,11 @@ try {
             if (-not [Uri]::TryCreate($url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -notin @('http','https','tcp') -or -not $uri.Host -or $uri.UserInfo -or $uri.Query -or $uri.Fragment) { throw 'Repository URL must use HTTP(S) or TCP without credentials, query or fragment.' }
         }
     }
-    if ($AskCredential -and -not $Preview -and $InfobaseType -eq 'Repository') {
+    if (($AskRepositoryCredential -or ($AskCredential -and $InfobaseType -eq 'Repository')) -and -not $Preview) {
         $credential=Read-ProjectCredential -Account 'Repository' -DefaultUserName $RepositoryUserName
         $RepositoryUserName=$credential.UserName;$RepositoryPassword=$credential.Password
-    } elseif ($AskCredential -and -not $Preview) {
+    }
+    if ($AskCredential -and -not $Preview -and $InfobaseType -ne 'Repository') {
         $credential = Read-ProjectCredential -Account 'Infobase' -DefaultUserName $UserName
         $UserName = $credential.UserName; $Password = $credential.Password
     }

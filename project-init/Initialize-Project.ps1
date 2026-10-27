@@ -51,6 +51,7 @@ $repositorySecret = $null
 . (Join-Path $PSScriptRoot 'Select-Extensions.ps1')
 . (Join-Path $PSScriptRoot 'Project-Git.ps1')
 . (Join-Path $PSScriptRoot 'Fresh-History.ps1')
+. (Join-Path $PSScriptRoot 'Credentials.ps1')
 $inPlace=$false;$initializationLock=$null;$initializationLockPath=$null;$projectPublished=$false
 $interactiveRun=-not $PSBoundParameters.ContainsKey('InfobaseType')
 $interactiveExtensions=$SelectExtensions -or (-not $PSBoundParameters.ContainsKey('InfobaseType') -and -not $Extensions -and -not $NoExtensions)
@@ -213,10 +214,10 @@ try {
         }
     }
     if ($AskCredential -and -not $Preview -and $InfobaseType -eq 'Repository') {
-        $credential=Get-Credential -Message 'Repository account'
+        $credential=Read-ProjectCredential -Account 'Repository' -DefaultUserName $RepositoryUserName
         $RepositoryUserName=$credential.UserName;$RepositoryPassword=$credential.Password
     } elseif ($AskCredential -and -not $Preview) {
-        $credential = Get-Credential -Message 'Source infobase account'
+        $credential = Read-ProjectCredential -Account 'Infobase' -DefaultUserName $UserName
         $UserName = $credential.UserName; $Password = $credential.Password
     }
     if ($Preview) {

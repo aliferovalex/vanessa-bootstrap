@@ -47,7 +47,12 @@ cd vanessa-bootstrap
 .\initialize.cmd -InfobaseType Repository -Infobase https://server/repo/repo.1ccr/Main -RepositoryVersion 12 -RepositoryUserName reader -TargetDirectory D:\Projects\Demo -DesignerPath C:\Tools\1C\bin\1cv8.exe -EdtCliPath C:\Tools\EDT\1cedtcli.exe
 ```
 
-Пароль хранилища запрашивается скрыто. Можно использовать `-AskCredential`.
+Пароль хранилища запрашивается скрыто. Можно использовать `-AskCredential`:
+имя запрашивается в консоли, пароль вводится скрыто. Для источника `Repository`
+это пользователь хранилища; для `File`/`Server` — пользователь информационной
+базы 1С. При ошибке «Пользователь ИБ не идентифицирован» сначала проверьте
+эти имя и пароль в обычном Конфигураторе той же базы. Вход Windows этим
+параметром не настраивается.
 При прямом вызове PS1 пароль можно передать как SecureString; в файлы проекта он
 не записывается. Платформа получает пароль аргументом процесса, доступным
 административным средствам ОС. URL со встроенными учётными данными запрещены.

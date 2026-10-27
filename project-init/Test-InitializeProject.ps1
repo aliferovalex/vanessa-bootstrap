@@ -15,6 +15,9 @@ class Tool {
  static void Xml(string dir,string name) { Directory.CreateDirectory(dir); File.WriteAllText(Path.Combine(dir,"Configuration.xml"),"<MetaDataObject><Configuration><Properties><Name>"+name+"</Name></Properties></Configuration></MetaDataObject>"); }
  static int Main(string[] a) {
   if(a.Length>0 && a[0]=="DESIGNER") {
+   string expectedUser=Environment.GetEnvironmentVariable("INIT_TEST_USER");
+   string expectedPassword=Environment.GetEnvironmentVariable("INIT_TEST_PASSWORD");
+   if(expectedUser!=null && (Value(a,"/N")!=expectedUser || (Value(a,"/P")??"")!=(expectedPassword??""))) return 33;
    string dir=Value(a,"/DumpConfigToFiles");
    if(a.Contains("-AllExtensions")){Xml(Path.Combine(dir,"ExtOne"),"ExtOne"); Xml(Path.Combine(dir,"ExtTwo"),"ExtTwo");}
    else Xml(dir,"Configuration");
@@ -108,4 +111,28 @@ try {
  Assert ($interactiveManifest.extensions.Count -eq 1 -and $interactiveManifest.extensions[0].name -eq 'ExtTwo') 'Interactive selection imported wrong extensions'
  Assert (-not(Test-Path (Join-Path $interactiveTarget 'src/cfe/ExtOne'))) 'Unselected project was imported'
 } finally { Remove-Item Function:\Read-Host }
-Write-Host "PASS: preview, selected extension, base association, Git commit, LFS initial objects and hooks, opt-out, existing target, missing extension, failed import, interactive selection. Artifacts: $TestRoot"
+$oldUser=$env:INIT_TEST_USER;$oldPassword=$env:INIT_TEST_PASSWORD
+try {
+ $env:INIT_TEST_USER='1C test user'
+ function Read-Host {
+  param($Prompt,[switch]$AsSecureString)
+  if($AsSecureString){
+   $value=New-Object Security.SecureString
+   foreach($character in ([string]$env:INIT_TEST_PASSWORD).ToCharArray()){$value.AppendChar($character)}
+   return $value
+  }
+  if($Prompt -like '*user name*'){return $env:INIT_TEST_USER}
+  throw 'Unexpected credential prompt'
+ }
+ foreach($case in @('empty','special')){
+  $env:INIT_TEST_PASSWORD=if($case -eq 'empty'){''}else{'synthetic p@ss"word\ tail'}
+  $authenticated=Join-Path $TestRoot ('authenticated-'+$case)
+  $serverOptions=$common.Clone();$serverOptions.InfobaseType='Server';$serverOptions.Infobase='test-server:7541\test-base'
+  & $script @serverOptions -TargetDirectory $authenticated -AskCredential -NoExtensions -NoGitLfs
+  Assert (Test-Path (Join-Path $authenticated 'project-init.json')) 'Credential export failed'
+ }
+} finally {
+ Remove-Item Function:\Read-Host
+ $env:INIT_TEST_USER=$oldUser;$env:INIT_TEST_PASSWORD=$oldPassword
+}
+Write-Host "PASS: preview, selected extension, base association, Git commit, LFS initial objects and hooks, opt-out, existing target, missing extension, failed import, interactive selection, console credentials with empty/special passwords. Artifacts: $TestRoot"

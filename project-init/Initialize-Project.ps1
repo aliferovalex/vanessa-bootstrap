@@ -38,6 +38,7 @@ param(
     [switch]$AskRepositoryCredential,
     [switch]$UseOSAuthentication,
     [switch]$NonInteractive,
+    [string]$ResumeFrom,
     [switch]$Preview,
     [switch]$SkipInitialCommit,
     [switch]$NoGitLfs,
@@ -56,6 +57,8 @@ $repositorySecret = $null
 . (Join-Path $PSScriptRoot 'Fresh-History.ps1')
 . (Join-Path $PSScriptRoot 'Credentials.ps1')
 . (Join-Path $PSScriptRoot 'Source-Selection.ps1')
+. (Join-Path $PSScriptRoot 'Initialization-State.ps1')
+$resume=$null;$resumeExportsReady=$false;$selectedExtensionNames=$null;$resumeSelectionOverride=$false;$work=$null
 $inPlace=$false;$initializationLock=$null;$initializationLockPath=$null;$projectPublished=$false
 $interactiveRun=-not $PSBoundParameters.ContainsKey('InfobaseType')
 $interactiveExtensions=$SelectExtensions -or (-not $PSBoundParameters.ContainsKey('InfobaseType') -and -not $Extensions -and -not $NoExtensions)
@@ -129,7 +132,7 @@ function Get-SafeNativeArguments([string[]]$Arguments) {
         else { $argument;$hideNext=$argument -in @('/P','/ConfigurationRepositoryP') }
     }
 }
-function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$UnicodeOutput) {
+function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$UnicodeOutput,[int[]]$SuccessExitCodes=@(0)) {
     Write-Host $Label
     $safeArguments=@(Get-SafeNativeArguments $Arguments)
     Write-Text (Join-Path $work ($Label+'.launch.json')) (@{executable=$Exe;arguments=$safeArguments}|ConvertTo-Json -Depth 5)
@@ -161,7 +164,7 @@ function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$Un
         Write-Text (Join-Path $work ($Label + '.stderr.log')) $err
         Write-Text (Join-Path $work ($Label+'.result.json')) (@{exitCode=$proc.ExitCode;timedOut=$timedOut;timeoutSeconds=$TimeoutSeconds}|ConvertTo-Json)
         if ($timedOut) { throw "Timeout: $Label after $TimeoutSeconds seconds. The operation may be incomplete." }
-        if ($proc.ExitCode -ne 0) { throw "$Label failed (exit $($proc.ExitCode)). $err $out" }
+        if ($proc.ExitCode -notin $SuccessExitCodes) { throw "$Label failed (exit $($proc.ExitCode)). $err $out" }
         return $out.Trim()
     } finally { $proc.Dispose() }
 }
@@ -203,16 +206,41 @@ function Import-Edt([string]$Xml,[string]$Name,[string]$Destination,[string]$Bas
     $arguments = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','import','--configuration-files',$Xml,'--project-name',$Name,'--version',$edtVersion)
     if ($EdtIniFile) { $arguments = @('-ini-file',$EdtIniFile) + $arguments }
     if ($BaseProject) { $arguments += @('--base-project-name',$BaseProject) }
-    [void](Run-Native $EdtCliPath $arguments ('edt-import-'+$Name) -UnicodeOutput)
-    $source = Join-Path $workspace $Name
+    $source=Get-InitializationCachedEdt $Name $Xml $BaseProject
+    if($source){
+        Write-Host ('reuse-edt-import-'+$Name)
+        if(-not $BaseProject){$script:workspace=Split-Path $source -Parent}
+    }else{
+        [void](Run-Native $EdtCliPath $arguments ('edt-import-'+$Name) -UnicodeOutput)
+        $source = Join-Path $workspace $Name
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $source '.project')) -or -not (Test-Path -LiteralPath (Join-Path $source 'src') -PathType Container)) {
         throw "EDT did not create expected project: $source"
     }
     # CLI has exited; copy project sources without touching the live workspace.
-    Copy-Item -LiteralPath $source -Destination $Destination -Recurse
+    Copy-InitializationTree $source $Destination ('copy-edt-'+$Name)
 }
 
 try {
+    if($ResumeFrom){
+        $resumeSelectionOverride=$PSBoundParameters.ContainsKey('Extensions') -or $PSBoundParameters.ContainsKey('SelectExtensions') -or $PSBoundParameters.ContainsKey('NoExtensions')
+        $resume=Read-InitializationResume $ResumeFrom
+        if($resume.selectionKnown -and -not $resumeSelectionOverride){$selectedExtensionNames=@($resume.selectedExtensions)}
+        foreach($name in $resume.settings.Keys){
+            if($resume.settings.InfobaseType -ne 'Repository' -and $name -in @('RepositoryUserName','RepositoryVersion','ExtensionRepositoryFile','AskRepositoryCredential')){continue}
+            if($PSBoundParameters.ContainsKey($name)){
+                if($name -in @('InfobaseType','Infobase','DesignerPath','RepositoryVersion','ExtensionRepositoryFile') -and
+                    [string](Get-Variable -Name $name -ValueOnly) -ne [string]$resume.settings[$name]){throw "Resume source setting differs: $name. Start a new initialization instead."}
+                continue
+            }
+            $value=$resume.settings[$name]
+            if($null -eq $value -or ($value -is [string] -and -not $value)){continue}
+            Set-Variable -Name $name -Value $value -Scope Script
+            $PSBoundParameters[$name]=$value
+        }
+        $interactiveExtensions=$SelectExtensions -or (-not $Extensions -and -not $NoExtensions -and -not $NonInteractive)
+        Write-Host ('Resume snapshots: '+$resume.directory)
+    }
     if($NonInteractive -and (-not $InfobaseType -or -not $Infobase -or -not $DesignerPath -or -not $EdtCliPath)) {
         throw 'NonInteractive requires InfobaseType, Infobase, DesignerPath and EdtCliPath.'
     }
@@ -290,11 +318,16 @@ try {
             if (-not [Uri]::TryCreate($url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -notin @('http','https','tcp') -or -not $uri.Host -or $uri.UserInfo -or $uri.Query -or $uri.Fragment) { throw 'Repository URL must use HTTP(S) or TCP without credentials, query or fragment.' }
         }
     }
-    if (($AskRepositoryCredential -or ($AskCredential -and $InfobaseType -eq 'Repository')) -and -not $Preview) {
+    $initialSourceInfobase=$Infobase
+    $cachedSnapshot=Get-InitializationCachedSnapshot ([bool]$NoExtensions)
+    $cachedMain=$cachedSnapshot.main;$cachedExtensions=$cachedSnapshot.extensions
+    $resumeExportsReady=[bool]($cachedMain -and ($NoExtensions -or $cachedExtensions))
+    if($resume -and -not $resumeExportsReady){$cachedMain='';$cachedExtensions=''}
+    if (($AskRepositoryCredential -or ($AskCredential -and $InfobaseType -eq 'Repository')) -and -not $Preview -and -not $resumeExportsReady) {
         $credential=Read-ProjectCredential -Account 'Repository' -DefaultUserName $RepositoryUserName
         $RepositoryUserName=$credential.UserName;$RepositoryPassword=$credential.Password
     }
-    if ($AskCredential -and -not $Preview -and $InfobaseType -ne 'Repository') {
+    if ($AskCredential -and -not $Preview -and $InfobaseType -ne 'Repository' -and -not $resumeExportsReady) {
         $credential = Read-ProjectCredential -Account 'Infobase' -DefaultUserName $UserName
         $UserName = $credential.UserName; $Password = $credential.Password
     }
@@ -302,7 +335,7 @@ try {
         [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;InfobaseAuthentication=$(if($UseOSAuthentication){'OS'}elseif($AskCredential -or $UserName -or $Password){'Infobase'}else{'Default'});Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
         return
     }
-    if ($UserName -and -not $Password) {
+    if ($UserName -and -not $Password -and -not $resumeExportsReady) {
         if($NonInteractive -and -not $AskCredential){throw 'NonInteractive requires Password with UserName (use an empty SecureString for an empty password).'}
         $Password = Read-Host 'Infobase password (empty allowed)' -AsSecureString
     }
@@ -310,7 +343,7 @@ try {
         $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
         try { $secret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
     }
-    if ($RepositoryUserName -and -not $RepositoryPassword) {
+    if ($RepositoryUserName -and -not $RepositoryPassword -and -not $resumeExportsReady) {
         if($NonInteractive -and -not ($AskRepositoryCredential -or $AskCredential)){throw 'NonInteractive requires RepositoryPassword with RepositoryUserName.'}
         $RepositoryPassword = Read-Host 'Repository password (empty allowed)' -AsSecureString
     }
@@ -322,9 +355,16 @@ try {
     [void][IO.Directory]::CreateDirectory($work)
     $workspace = Join-Path $work 'edt-workspace'
     $staging = Join-Path $work 'repository'
+    Write-InitializationCheckpoint 'running'
     $templateCommit = $null
     if ($inPlace) {
         $initializationLockPath=Join-Path $originalState.gitDirectory 'project-initialization.lock'
+        if($resume -and (Test-Path -LiteralPath $initializationLockPath)){
+            if((Get-Item -LiteralPath $initializationLockPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Invalid initialization lock.'}
+            # An active owner holds FileShare.None, so this cannot remove its lock.
+            $stale=[IO.FileStream]::new($initializationLockPath,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None,1,[IO.FileOptions]::DeleteOnClose)
+            $stale.Dispose()
+        }
         $initializationLock=[IO.File]::Open($initializationLockPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
     }
     if ($inPlace -and -not $FreshHistory) {
@@ -360,6 +400,7 @@ try {
     }
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.autocrlf','true') 'git-windows-line-endings')
     [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.safecrlf','true') 'git-safe-line-endings')
+    [void](Run-Native $GitPath @('-C',$staging,'config','--local','core.longpaths','true') 'git-long-paths')
     if (-not $NoGitLfs) {
         [void](Run-Native $GitPath @('lfs','version') 'git-lfs-check')
         [void](Run-Native $GitPath @('-C',$staging,'lfs','install','--local') 'git-lfs-install')
@@ -369,8 +410,8 @@ try {
     if ($GitUserEmail) { $gitIdentity += @('-c',('user.email='+$GitUserEmail)) }
     if ($inPlace -and -not $FreshHistory -and $SkipInitialCommit) { $gitIdentity=@('-c','user.name=Project initializer','-c','user.email=initializer@localhost') }
     if (-not $SkipInitialCommit) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'var','GIT_AUTHOR_IDENT')) 'git-check-identity') }
-    $xmlMain = Join-Path $work 'xml-configuration'
-    if ($InfobaseType -eq 'Repository') {
+    $xmlMain = if($cachedMain){$cachedMain}else{Join-Path $work 'xml-configuration'}
+    if ($InfobaseType -eq 'Repository' -and -not $resumeExportsReady) {
         if (-not $RepositoryUserName) { throw 'RepositoryUserName is required.' }
         $Infobase=Join-Path $work 'read-base';$connectionOption='/F'
         Invoke-ProjectNative -Executable $DesignerPath -Arguments @('/DisableStartupDialogs','/DisableStartupMessages','/Out',(Join-Path $work 'create-base.log')) -CreateFile $Infobase -Directory $work -Label 'create-base' -TimeoutSeconds $TimeoutSeconds
@@ -386,8 +427,8 @@ try {
         }
         Read-RepositorySnapshot $sourceRepositoryUrl $RepositoryVersion ''
     }
-    Export-Xml $xmlMain 'dump-main'
-    foreach ($entry in $repositories) {
+    if($cachedMain){Write-Host 'reuse-dump-main'}else{Export-Xml $xmlMain 'dump-main'}
+    foreach ($entry in $(if(-not $resumeExportsReady){$repositories}else{@()})) {
         $placeholder=Join-Path $work ('placeholder-'+$entry.name)
         New-ExtensionPlaceholder (Join-Path $xmlMain 'Configuration.xml') $placeholder $entry.name
         [void](Run-Native $DesignerPath @('DESIGNER','/F',$Infobase,'/DisableStartupDialogs','/DisableStartupMessages','/LoadConfigFromFiles',$placeholder,'-Extension',$entry.name,'/Out',(Join-Path $work ($entry.name+'-placeholder.log'))) ($entry.name+'-placeholder'))
@@ -396,14 +437,16 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $xmlMain 'Configuration.xml'))) { throw 'Designer did not export Configuration.xml.' }
     $extensionDirs = @()
     if (-not $NoExtensions) {
-        $xmlExtensions = Join-Path $work 'xml-extensions'
-        Export-Xml $xmlExtensions 'dump-extensions' -AllExtensions
+        $xmlExtensions = if($cachedExtensions){$cachedExtensions}else{Join-Path $work 'xml-extensions'}
+        if($cachedExtensions){Write-Host 'reuse-dump-extensions'}else{Export-Xml $xmlExtensions 'dump-extensions' -AllExtensions}
         $available = @(Get-ChildItem -LiteralPath $xmlExtensions -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'Configuration.xml') })
         if ($InfobaseType -eq 'Repository') {
             $exportedNames=@($available | ForEach-Object { $_.Name })
             foreach ($entry in $repositories) { if ($entry.name -notin $exportedNames) { throw 'Repository extension name differs from the requested name.' } }
         }
-        if ($Extensions) {
+        if($resume -and $resume.selectionKnown -and -not $resumeSelectionOverride){
+            $extensionDirs=@($available|Where-Object {$_.Name -in $resume.selectedExtensions})
+        } elseif ($Extensions) {
             $availableNames = @($available | ForEach-Object { $_.Name })
             foreach ($name in $Extensions) { if ($name -notin $availableNames) { throw "Extension not found in export: $name" } }
             $extensionDirs = @($available | Where-Object Name -In $Extensions)
@@ -417,6 +460,8 @@ try {
         if ($name -in $names) { throw "Duplicate EDT project name: $name" }
         $names += $name
     }
+    $selectedExtensionNames=@($extensionDirs|ForEach-Object {$_.Name})
+    Write-InitializationCheckpoint 'running'
     $helpArgs = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','help','import')
     if ($EdtIniFile) { $helpArgs = @('-ini-file',$EdtIniFile) + $helpArgs }
     [void](Run-Native $EdtCliPath $helpArgs 'edt-help-import' -UnicodeOutput)
@@ -457,13 +502,11 @@ try {
     [void][IO.Directory]::CreateDirectory($windowsCheckout)
     # A clean prefix avoids Git retaining unchanged LF-only working files.
     [void](Run-Native $GitPath @('-C',$staging,'checkout-index','--all',('--prefix='+$windowsCheckout.Replace('\','/')+'/')) 'git-windows-working-copy')
-    foreach ($file in Get-ChildItem -LiteralPath $windowsCheckout -Recurse -File -Force) {
-        $relative = $file.FullName.Substring($windowsCheckout.Length).TrimStart('\','/')
-        Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $staging $relative) -Force
-    }
+    Copy-InitializationTree $windowsCheckout $staging 'copy-windows-working-copy'
     [void](Run-Native $GitPath @('-C',$staging,'add','--all') 'git-verify-line-endings')
     if (-not $SkipInitialCommit -or ($inPlace -and -not $FreshHistory)) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'commit','-m','Initialize EDT projects from source')) 'git-commit') }
     # Publish only after all exports, imports and Git operations succeeded.
+    Write-InitializationCheckpoint 'publishing'
     if ($inPlace) {
         $current=Get-InPlaceState $GitPath $TargetDirectory
         if ($current.head -ne $originalState.head -or $current.branch -ne $originalState.branch) { throw 'Repository changed before publication; original project was not updated.' }
@@ -503,6 +546,7 @@ try {
         }
     } else { Move-Item -LiteralPath $staging -Destination $TargetDirectory }
     $projectPublished=$true
+    Write-InitializationCheckpoint 'published'
     if ($ProjectRemoteUrl) { Set-ProjectRemote $GitPath $TargetDirectory $ProjectRemoteUrl }
     elseif ($inPlace -and $interactiveRun -and -not $NonInteractive) {
         $remote=Read-Host 'Project Git URL (empty: keep current origin; configure it before pushing)'
@@ -520,8 +564,11 @@ try {
     } else { Write-Host 'Open EDT: Import existing projects from the repository. Configure a personal debug infobase separately.' }
 } catch {
     $message = Protect-Text $_.Exception.Message
+    if($work -and (Test-Path -LiteralPath (Join-Path $work 'initialization.json'))){
+        try{$checkpoint=Read-InitJson (Join-Path $work 'initialization.json');if($checkpoint.status -in @('running','failed')){Write-InitializationCheckpoint 'failed'}}catch{}
+    }
     if ($projectPublished) { Write-Host "Project initialization is already applied at $TargetDirectory; finish Git/EDT setup separately." }
-    if (Get-Variable work -ErrorAction SilentlyContinue) { Write-Host "Diagnostics: $work" }
+    if ($work) { Write-Host "Diagnostics: $work" }
     throw $message
 } finally {
     if ($initializationLock) { $initializationLock.Dispose();Remove-Item -LiteralPath $initializationLockPath }

@@ -33,6 +33,10 @@ class Tool {
   }else if(a.Contains("help")){Console.WriteLine("import --configuration-files --project-name --base-project-name --version");return 0;}
   else if(a.Contains("import")){
    string name=V(a,"--project-name")??Path.GetFileName(V(a,"--project"));stage="edt-import-"+name;
+   if(!a.Contains("--configuration-files")){
+    Directory.CreateDirectory(V(a,"-data"));File.WriteAllText(Path.Combine(V(a,"-data"),"registered-base"),name);
+    File.AppendAllText(Environment.GetEnvironmentVariable("INIT_RESUME_TRACE"),"register-base\n");return 0;
+   }
    string root=V(a,"--project")??Path.Combine(V(a,"-data"),name);Directory.CreateDirectory(Path.Combine(root,"src"));
    File.WriteAllText(Path.Combine(root,".project"),"<projectDescription><name>"+name+"</name></projectDescription>");LongFile(root);
   }else return 9;
@@ -101,6 +105,10 @@ try{
   $lines=@([IO.File]::ReadAllLines($trace))
   $heapLaunch=Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'edt-import-ResumeDemo_Ext.launch.json'|Where-Object {$_.FullName -notlike ($old.FullName+'*')}|Select-Object -First 1
   if($heapLaunch){$launch=[IO.File]::ReadAllText($heapLaunch.FullName)|ConvertFrom-Json;Assert ('-Xmx12g' -in $launch.arguments) 'Heap argument lost';Assert ([Array]::IndexOf($launch.arguments,'-vmargs') -lt [Array]::IndexOf($launch.arguments,'-command')) 'VM arguments after command'}
+  if($scenario -in @('checkpoint','legacy','selection','repository','fresh')){
+   Assert (@($lines|Where-Object {$_ -eq 'register-base'}).Count -eq 1) 'Recovery did not register the completed base'
+   Assert ($launch.arguments[[Array]::IndexOf($launch.arguments,'-data')+1] -ne (Join-Path $old.FullName 'edt-workspace')) 'Failed workspace was reused'
+  }
   if($scenario -eq 'repository'){Assert (@($lines|Where-Object {$_ -eq 'snapshot'}).Count -eq 2) 'Repository snapshots repeated during resume'}
   Assert (@($lines|Where-Object {$_ -eq 'dump-main'}).Count -eq $(if($scenario -in @('failed-export','failed-extensions')){2}else{1})) 'Incorrect export reuse'
   Assert (@($lines|Where-Object {$_ -eq 'dump-extensions'}).Count -eq $(if($scenario -eq 'failed-extensions'){2}else{1})) 'Extension export repeated'

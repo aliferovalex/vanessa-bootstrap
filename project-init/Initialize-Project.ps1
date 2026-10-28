@@ -61,6 +61,7 @@ $repositorySecret = $null
 . (Join-Path $PSScriptRoot 'Initialization-State.ps1')
 . (Join-Path $PSScriptRoot 'Native-Output.ps1')
 $resume=$null;$resumeExportsReady=$false;$selectedExtensionNames=$null;$resumeSelectionOverride=$false;$work=$null
+$edtBaseSource='';$edtRecoveryPrepared=$false
 $inPlace=$false;$initializationLock=$null;$initializationLockPath=$null;$projectPublished=$false
 $interactiveRun=-not $PSBoundParameters.ContainsKey('InfobaseType')
 $interactiveExtensions=$SelectExtensions -or (-not $PSBoundParameters.ContainsKey('InfobaseType') -and -not $Extensions -and -not $NoExtensions)
@@ -148,10 +149,12 @@ function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$Un
     if ($UnicodeOutput) { $info.StandardOutputEncoding = [Text.Encoding]::UTF8;$info.StandardErrorEncoding=[Text.Encoding]::UTF8 }
     $proc = New-Object Diagnostics.Process
     $proc.StartInfo = $info
-    $capture=$null;$started=$false;$timedOut=$false;$memoryExhausted=$false
+    $capture=$null;$started=$false;$timedOut=$false;$memoryExhausted=$false;$commandFailed=$false
     $stdoutPath=Join-Path $work ($Label+'.stdout.log');$stderrPath=Join-Path $work ($Label+'.stderr.log')
     $watch=[Diagnostics.Stopwatch]::new();$nextStatus=30.0;$nextLogCheck=0.0
     $edtLog='';$logPosition=0L;$logTail=''
+    $stdoutPosition=0L;$stderrPosition=0L;$commandTail=''
+    $duplicatePattern='(?i)Workspace project with name[^\r\n]*already exists?'
     if($Label -like 'edt-*'){
         $data=Get-InitArgument $Arguments '-data'
         if($data){$edtLog=Join-Path $data '.metadata\.log';if(Test-Path -LiteralPath $edtLog){$logPosition=(Get-Item -LiteralPath $edtLog).Length}}
@@ -166,6 +169,11 @@ function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$Un
                 $delta=Read-InitializationEdtLog $edtLog ([ref]$logPosition)
                 $logTail+=$delta
                 if($logTail -match 'OutOfMemoryError\s*:\s*(Java heap space|GC overhead limit exceeded)'){$memoryExhausted=$true;break}
+                if($Label -like 'edt-import-*' -or $Label -like 'edt-register-*'){
+                    $commandTail+=(Read-InitializationEdtLog $stdoutPath ([ref]$stdoutPosition))+(Read-InitializationEdtLog $stderrPath ([ref]$stderrPosition))
+                    if($commandTail -match $duplicatePattern){$commandFailed=$true;break}
+                    if($commandTail.Length -gt 2048){$commandTail=$commandTail.Substring($commandTail.Length-2048)}
+                }
                 if($logTail.Length -gt 512){$logTail=$logTail.Substring($logTail.Length-512)}
                 $nextLogCheck=$watch.Elapsed.TotalSeconds+2
             }
@@ -176,15 +184,17 @@ function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$Un
                 $nextStatus=$watch.Elapsed.TotalSeconds+30
             }
         }
-        if($timedOut -or $memoryExhausted){Stop-InitializationProcess $proc}
+        if($timedOut -or $memoryExhausted -or $commandFailed){Stop-InitializationProcess $proc}
         if(-not $capture.Complete(10000)){throw "Output streams did not close: $Label. Check the CLI process and its logs."}
         if($edtLog){
             $logTail+=Read-InitializationEdtLog $edtLog ([ref]$logPosition)
             if($logTail -match 'OutOfMemoryError\s*:\s*(Java heap space|GC overhead limit exceeded)'){$memoryExhausted=$true}
         }
         $out=[IO.File]::ReadAllText($stdoutPath);$err=[IO.File]::ReadAllText($stderrPath)
-        Write-Text (Join-Path $work ($Label+'.result.json')) (@{exitCode=$proc.ExitCode;timedOut=$timedOut;memoryExhausted=$memoryExhausted;timeoutSeconds=$TimeoutSeconds;elapsedSeconds=$watch.Elapsed.TotalSeconds;pid=$proc.Id;edtLog=$edtLog}|ConvertTo-Json)
+        if(($Label -like 'edt-import-*' -or $Label -like 'edt-register-*') -and ($out+$err) -match $duplicatePattern){$commandFailed=$true}
+        Write-Text (Join-Path $work ($Label+'.result.json')) (@{exitCode=$proc.ExitCode;timedOut=$timedOut;memoryExhausted=$memoryExhausted;commandFailed=$commandFailed;timeoutSeconds=$TimeoutSeconds;elapsedSeconds=$watch.Elapsed.TotalSeconds;pid=$proc.Id;edtLog=$edtLog}|ConvertTo-Json)
         if($memoryExhausted){throw "EDT exhausted Java heap space: $Label. Increase -EdtMaxHeap for the available RAM and continue with -ResumeFrom. EDT log: $edtLog"}
+        if($commandFailed){throw "EDT rejected the import: a workspace project with this name already exists. Continue with -ResumeFrom using a new recovery workspace. Logs: $stdoutPath"}
         if ($timedOut) { throw "Timeout: $Label after $TimeoutSeconds seconds. The operation may be incomplete." }
         if ($proc.ExitCode -notin $SuccessExitCodes) { throw "$Label failed (exit $($proc.ExitCode)). $err $out" }
         return $out.Trim()
@@ -229,21 +239,30 @@ function Export-Xml([string]$Directory,[string]$Label,[switch]$AllExtensions) {
 }
 function Import-Edt([string]$Xml,[string]$Name,[string]$Destination,[string]$BaseProject) {
     $edtVersion = ($platformVersion -split '\.')[0..2] -join '.'
-    $arguments = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','import','--configuration-files',$Xml,'--project-name',$Name,'--version',$edtVersion)
-    $projectPath=Join-Path $workspace $Name
-    if(Test-Path -LiteralPath $projectPath -PathType Container){
-        $arguments = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','import','--configuration-files',$Xml,'--project',$projectPath,'--version',$edtVersion)
-    }
-    $arguments=Add-EdtHeapArguments $arguments $EdtMaxHeap
-    if ($EdtIniFile) { $arguments = @('-ini-file',$EdtIniFile) + $arguments }
-    if ($BaseProject) { $arguments += @('--base-project-name',$BaseProject) }
     $source=Get-InitializationCachedEdt $Name $Xml $BaseProject
     if($source){
         Write-Host ('reuse-edt-import-'+$Name)
-        if(-not $BaseProject){$script:workspace=Split-Path $source -Parent}
+        if(-not $BaseProject){$script:edtBaseSource=$source;$script:workspace=Split-Path $source -Parent}
     }else{
+        if($resume -and $BaseProject -and -not $edtRecoveryPrepared){
+            if(-not $edtBaseSource -or -not(Test-Path -LiteralPath (Join-Path $edtBaseSource '.project'))){throw 'Completed EDT base project is required for workspace recovery.'}
+            # Never reuse a failed Eclipse project registration. Import only the
+            # completed base sources into a new workspace; keep old state intact.
+            $script:workspace=Join-Path $work 'edt-recovery-workspace'
+            $register=@('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','import','--project',$edtBaseSource)
+            $register=Add-EdtHeapArguments $register $EdtMaxHeap
+            if($EdtIniFile){$register=@('-ini-file',$EdtIniFile)+$register}
+            [void](Run-Native $EdtCliPath $register ('edt-register-base-'+$BaseProject) -UnicodeOutput)
+            $script:edtRecoveryPrepared=$true
+        }
+        $projectPath=Join-Path $workspace $Name
+        $arguments=@('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','import','--configuration-files',$Xml,'--project',$projectPath,'--version',$edtVersion)
+        $arguments=Add-EdtHeapArguments $arguments $EdtMaxHeap
+        if ($EdtIniFile) { $arguments = @('-ini-file',$EdtIniFile) + $arguments }
+        if ($BaseProject) { $arguments += @('--base-project-name',$BaseProject) }
         [void](Run-Native $EdtCliPath $arguments ('edt-import-'+$Name) -UnicodeOutput)
         $source = Join-Path $workspace $Name
+        if(-not $BaseProject){$script:edtBaseSource=$source;$script:edtRecoveryPrepared=$true}
     }
     if (-not (Test-Path -LiteralPath (Join-Path $source '.project')) -or -not (Test-Path -LiteralPath (Join-Path $source 'src') -PathType Container)) {
         throw "EDT did not create expected project: $source"

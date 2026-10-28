@@ -57,6 +57,7 @@ function Read-InitializationResume([string]$Directory) {
             if('--base-project-name' -notin $launch.arguments){
                 $settings.EdtCliPath=[string]$launch.executable
                 $settings.ProjectName=Get-InitArgument $launch.arguments '--project-name'
+                if(-not $settings.ProjectName){$settings.ProjectName=Split-Path (Get-InitArgument $launch.arguments '--project') -Leaf}
                 $ini=Get-InitArgument $launch.arguments '-ini-file';if($ini){$settings.EdtIniFile=$ini}
                 break
             }
@@ -93,6 +94,7 @@ function Get-InitializationCachedExport([string]$Label,[bool]$AllExtensions,[str
         $launch=Read-InitJson (Join-Path $directory ($Label+'.launch.json'))
         if(-not $result -or $result.timedOut -or $result.exitCode -ne 0 -or -not $launch){continue}
         if($result.PSObject.Properties['memoryExhausted'] -and $result.memoryExhausted){continue}
+        if($result.PSObject.Properties['commandFailed'] -and $result.commandFailed){continue}
         $path=Get-InitArgument $launch.arguments '/DumpConfigToFiles'
         if(-not $path -or -not [IO.Path]::GetFullPath($path).StartsWith($directory.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){continue}
         if(-not(Test-Path -LiteralPath $path -PathType Container)){continue}
@@ -117,6 +119,7 @@ function Get-InitializationCachedEdt([string]$Name,[string]$Xml,[string]$BasePro
         $launch=Read-InitJson (Join-Path $directory ($label+'.launch.json'))
         if(-not $result -or $result.timedOut -or $result.exitCode -ne 0 -or -not $launch){continue}
         if($result.PSObject.Properties['memoryExhausted'] -and $result.memoryExhausted){continue}
+        if($result.PSObject.Properties['commandFailed'] -and $result.commandFailed){continue}
         $projectName=Get-InitArgument $launch.arguments '--project-name'
         $projectPath=Get-InitArgument $launch.arguments '--project'
         if(-not $projectName -and $projectPath){$projectName=Split-Path $projectPath -Leaf}

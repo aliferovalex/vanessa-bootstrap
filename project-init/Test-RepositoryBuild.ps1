@@ -21,7 +21,7 @@ class Tool {
    if(a.Contains("/DumpConfigToFiles")){string d=V(a,"/DumpConfigToFiles");if(a.Contains("-AllExtensions")){foreach(string f in Directory.GetFiles(b,"*.extension"))Xml(Path.Combine(d,Path.GetFileNameWithoutExtension(f)),Path.GetFileNameWithoutExtension(f));}else Xml(d,"Main");File.WriteAllText(V(a,"/Out"),"Export complete");return 0;}
   }
   if(a.Contains("help")){Console.WriteLine("import --configuration-files --project-name --base-project-name --version");return 0;}
-  if(a.Contains("import")){string d=Path.Combine(V(a,"-data"),V(a,"--project-name"));Directory.CreateDirectory(Path.Combine(d,"src"));File.WriteAllText(Path.Combine(d,".project"),"<projectDescription><name>"+V(a,"--project-name")+"</name></projectDescription>");File.WriteAllText(Path.Combine(d,"src/Configuration.mdo"),"<Configuration/>");return 0;}
+  if(a.Contains("import")){string name=V(a,"--project-name")??Path.GetFileName(V(a,"--project"));string d=V(a,"--project")??Path.Combine(V(a,"-data"),name);Directory.CreateDirectory(Path.Combine(d,"src"));File.WriteAllText(Path.Combine(d,".project"),"<projectDescription><name>"+name+"</name></projectDescription>");File.WriteAllText(Path.Combine(d,"src/Configuration.mdo"),"<Configuration/>");return 0;}
   if(a.Contains("-file")){foreach(string line in File.ReadAllLines(V(a,"-file"))){if(line.StartsWith("export ")){var m=Regex.Match(line,"--configuration-files \"(.+)\"");Xml(m.Groups[1].Value,"Main");}}return 0;}
   // The runner double accepts only the commands used by the template.
   if(new[]{"init-dev","update-dev","compileext","run"}.Contains(a[0]))return 0;

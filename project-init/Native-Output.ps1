@@ -21,6 +21,7 @@ namespace ProjectInitializer {
   }
   void Pump(StreamReader reader,string path,string[] secrets){
    int keep=secrets.Length==0?0:secrets.Max(s=>s.Length)-1;
+   bool lineSafe=secrets.All(s=>s.IndexOfAny(new[]{'\r','\n'})<0);
    string pending="";char[] buffer=new char[4096];
    using(var writer=new StreamWriter(new FileStream(path,FileMode.Create,FileAccess.Write,FileShare.ReadWrite),new UTF8Encoding(false))){
     writer.AutoFlush=true;
@@ -35,6 +36,7 @@ namespace ProjectInitializer {
        int start=pending.IndexOf(secret,StringComparison.Ordinal);
        while(start>=0 && start<cut){if(start+secret.Length>cut){cut=start;break;}start=pending.IndexOf(secret,start+1,StringComparison.Ordinal);}
       }}while(previous!=cut);
+      if(lineSafe)cut=Math.Max(cut,pending.LastIndexOf('\n')+1);
       if(cut>0){writer.Write(Redact(pending.Substring(0,cut),secrets));pending=pending.Substring(cut);}
      }
     }catch(IOException){if(!stopping)throw;}

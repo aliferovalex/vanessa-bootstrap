@@ -35,6 +35,7 @@ class Tool {
    File.AppendAllText(Path.Combine(data,".metadata/.log"),"java.lang.OutOfMemoryError: Java heap space\n");
    Thread.Sleep(20000);return 7;
   }
+  if(mode=="duplicate"){Console.WriteLine("edtsh: Workspace project with name Demo already exist");Thread.Sleep(20000);return 7;}
   if(mode=="nul"){Console.Write("a\0b\0");return 0;}
   return 0;
  }
@@ -60,7 +61,13 @@ Assert ($failed -and $watch.Elapsed.TotalSeconds -lt 15) 'OOM did not fail promp
 $result=[IO.File]::ReadAllText((Join-Path $work 'edt-memory.result.json'))|ConvertFrom-Json
 Assert ($result.memoryExhausted -and -not $result.timedOut) 'OOM confused with timeout'
 Assert (-not(Get-Process -Id $result.pid -ErrorAction SilentlyContinue)) 'OOM process left running'
+$secret='ordinary-password';$watch.Restart();$failed=$false
+try{Run-Native $exe @('--mode','duplicate','-data',$data) 'edt-import-duplicate' -UnicodeOutput|Out-Null}catch{$failed=$_.Exception.Message -like '*already exists*'}
+Assert ($failed -and $watch.Elapsed.TotalSeconds -lt 15) 'Duplicate project did not fail promptly'
+$result=[IO.File]::ReadAllText((Join-Path $work 'edt-import-duplicate.result.json'))|ConvertFrom-Json
+Assert ($result.commandFailed -and -not $result.timedOut) 'Duplicate project confused with timeout'
+Assert (-not(Get-Process -Id $result.pid -ErrorAction SilentlyContinue)) 'Duplicate project process left running'
 $argsList=@('-data','workspace','-timeout','30','-command','import','--project-name','Demo')
 $argsList=@(Add-EdtHeapArguments $argsList '12g')
 Assert (($argsList -join '|') -eq '-data|workspace|-timeout|30|-vmargs|-Xmx12g|-command|import|--project-name|Demo') 'JVM arguments misplaced'
-Write-Host 'PASS: live output before exit, cross-chunk secret redaction, NUL output, historical OOM ignored, fresh OOM detected and process stopped, JVM argument order.'
+Write-Host 'PASS: live output before exit, cross-chunk secret redaction, NUL output, historical OOM ignored, fresh OOM and duplicate project detected and processes stopped, JVM argument order.'

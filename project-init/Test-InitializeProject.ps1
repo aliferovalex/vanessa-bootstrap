@@ -34,8 +34,8 @@ class Tool {
   if(a.Contains("help")){Console.WriteLine("import --configuration-files --project-name --base-project-name --version");return 0;}
   if(a.Contains("import")){
    if(Environment.GetEnvironmentVariable("INIT_TEST_FAIL")=="1")return 7;
-   string dir=Path.Combine(Value(a,"-data"),Value(a,"--project-name"));Directory.CreateDirectory(Path.Combine(dir,"src"));
-   File.WriteAllText(Path.Combine(dir,".project"),"<projectDescription><name>"+Value(a,"--project-name")+"</name><base>"+Value(a,"--base-project-name")+"</base></projectDescription>");
+   string projectName=Value(a,"--project-name")??Path.GetFileName(Value(a,"--project")); string dir=Value(a,"--project")??Path.Combine(Value(a,"-data"),projectName);Directory.CreateDirectory(Path.Combine(dir,"src"));
+   File.WriteAllText(Path.Combine(dir,".project"),"<projectDescription><name>"+projectName+"</name><base>"+Value(a,"--base-project-name")+"</base></projectDescription>");
    File.WriteAllText(Path.Combine(dir,"src","Configuration.mdo"),"<Configuration/>");
    File.WriteAllBytes(Path.Combine(dir,"src","image.png"),new byte[]{0,13,10,255});
    File.WriteAllBytes(Path.Combine(dir,"src","Template.bin"),new byte[]{0,255,13,10});return 0;

@@ -31,6 +31,8 @@ $data=Join-Path $older 'workspace';$project=Join-Path $data Demo
 $edtResult=Join-Path $older 'edt-import-Demo.result.json'
 [IO.File]::WriteAllText($edtResult,'{"exitCode":0,"timedOut":false,"memoryExhausted":true}')
 Assert (-not(Get-InitializationCachedEdt Demo $oldMain '')) 'EDT result with background OOM accepted'
+[IO.File]::WriteAllText($edtResult,'{"exitCode":0,"timedOut":false,"commandFailed":true}')
+Assert (-not(Get-InitializationCachedEdt Demo $oldMain '')) 'EDT rejected command accepted as completed'
 [IO.File]::WriteAllText($edtResult,'{"exitCode":0,"timedOut":false,"memoryExhausted":false}')
 Assert ((Get-InitializationCachedEdt Demo $oldMain '') -eq $project) 'Successful --project result was not reused'
 Write-Host 'PASS: XML generations never mixed, main-only snapshot reused, timeout rejected.'

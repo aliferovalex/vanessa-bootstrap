@@ -15,6 +15,9 @@ class Tool {
  static void Xml(string dir,string name) { Directory.CreateDirectory(dir); File.WriteAllText(Path.Combine(dir,"Configuration.xml"),"<MetaDataObject><Configuration><Properties><Name>"+name+"</Name></Properties></Configuration></MetaDataObject>"); }
  static int Main(string[] a) {
   if(a.Length>0 && a[0]=="DESIGNER") {
+   int dump=Array.IndexOf(a,"/DumpConfigToFiles");
+   foreach(string key in new[]{"/WA+","/WA-","/N","/P","/ConfigurationRepositoryN","/ConfigurationRepositoryP"})
+    if(Array.IndexOf(a,key)>dump) return 37;
    string expectedUser=Environment.GetEnvironmentVariable("INIT_TEST_USER");
    string expectedPassword=Environment.GetEnvironmentVariable("INIT_TEST_PASSWORD");
    if(expectedUser!=null && (Value(a,"/N")!=expectedUser || (Value(a,"/P")??"")!=(expectedPassword??""))) return 33;

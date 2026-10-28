@@ -28,6 +28,7 @@ param(
     [string]$UserName,
     [Security.SecureString]$Password,
     [string]$RepositoryUserName,
+    [string]$RepositoryAddress,
     [Security.SecureString]$RepositoryPassword,
     [ValidateRange(-1,2147483647)][int]$RepositoryVersion=-1,
     [string]$ExtensionRepositoryFile,
@@ -84,8 +85,17 @@ function Protect-Text([string]$Value) {
     return $Value
 }
 function Write-Text([string]$Path,[string]$Text) { [IO.File]::WriteAllText($Path,$Text.Replace("`r`n","`n"),$utf8) }
+function Get-SafeNativeArguments([string[]]$Arguments) {
+    $hideNext=$false
+    foreach ($argument in $Arguments) {
+        if ($hideNext) { '[REDACTED]';$hideNext=$false }
+        else { $argument;$hideNext=$argument -in @('/P','/ConfigurationRepositoryP') }
+    }
+}
 function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$UnicodeOutput) {
     Write-Host $Label
+    $safeArguments=@(Get-SafeNativeArguments $Arguments)
+    Write-Text (Join-Path $work ($Label+'.launch.json')) (@{executable=$Exe;arguments=$safeArguments}|ConvertTo-Json -Depth 5)
     $info = New-Object Diagnostics.ProcessStartInfo
     $info.FileName = $Exe
     $info.Arguments = ($Arguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' '
@@ -100,17 +110,18 @@ function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$Un
         [void]$proc.Start()
         $stdout = $proc.StandardOutput.ReadToEndAsync()
         $stderr = $proc.StandardError.ReadToEndAsync()
-        if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+        $timedOut=-not $proc.WaitForExit($TimeoutSeconds * 1000)
+        if ($timedOut) {
             if ($PSVersionTable.PSVersion.Major -ge 7) { $proc.Kill($true) } else {
                 # EDT starts child processes; kill the owned tree, not just the launcher.
                 $killer = Start-Process -FilePath (Join-Path $env:WINDIR 'System32\taskkill.exe') -ArgumentList @('/PID',"$($proc.Id)",'/T','/F') -WindowStyle Hidden -PassThru -Wait
             }
-            throw "Timeout: $Label"
         }
         $out = Protect-Text ($stdout.GetAwaiter().GetResult())
         $err = Protect-Text ($stderr.GetAwaiter().GetResult())
         Write-Text (Join-Path $work ($Label + '.stdout.log')) $out
         Write-Text (Join-Path $work ($Label + '.stderr.log')) $err
+        if ($timedOut) { throw "Timeout: $Label" }
         if ($proc.ExitCode -ne 0) { throw "$Label failed (exit $($proc.ExitCode)). $err $out" }
         return $out.Trim()
     } finally { $proc.Dispose() }
@@ -118,19 +129,25 @@ function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$Un
 function Export-Xml([string]$Directory,[string]$Label,[switch]$AllExtensions) {
     [void][IO.Directory]::CreateDirectory($Directory)
     $log = Join-Path $work ($Label+'.designer.log')
-    $arguments = @('DESIGNER',$connectionOption,$Infobase,'/DisableStartupDialogs','/DisableStartupMessages','/DumpConfigToFiles',$Directory)
-    if ($AllExtensions) { $arguments += '-AllExtensions' }
+    $arguments = @('DESIGNER',$connectionOption,$Infobase)
     if ($UseOSAuthentication) { $arguments += '/WA+' }
     elseif ($UserName -or $Password) { $arguments += '/WA-' }
     if ($UserName) { $arguments += @('/N',$UserName) }
     if ($secret) { $arguments += @('/P',$secret) }
-    if ($RepositoryUserName) { $arguments += @('/ConfigurationRepositoryN',$RepositoryUserName,'/ConfigurationRepositoryP',[string]$repositorySecret) }
+    # Repository-source XML is exported from our intentionally unbound read base.
+    if ($InfobaseType -ne 'Repository') {
+        if ($RepositoryAddress) { $arguments += @('/ConfigurationRepositoryF',$RepositoryAddress) }
+        if ($RepositoryUserName) { $arguments += @('/ConfigurationRepositoryN',$RepositoryUserName,'/ConfigurationRepositoryP',[string]$repositorySecret) }
+    }
+    $arguments += @('/DisableStartupDialogs','/DisableStartupMessages','/DumpConfigToFiles',$Directory)
+    if ($AllExtensions) { $arguments += '-AllExtensions' }
     $arguments += @('/Out',$log)
     try { [void](Run-Native $DesignerPath $arguments $Label) } catch {
         $reason = $_.Exception.Message
         if (Test-Path -LiteralPath $log) { $reason += "`n" + (Protect-Text ([IO.File]::ReadAllText($log))) }
         if ($reason -match '(?is)(\u0445\u0440\u0430\u043d\u0438\u043b\u0438\u0449|configuration repository)') {
-            $reason+="`nRepository authentication is separate from infobase/Windows authentication. Use -AskRepositoryCredential or -RepositoryUserName; check the repository login and password in Designer."
+            if ($RepositoryUserName) { $reason+="`nRepository credentials were supplied. Check the repository address and launch diagnostics; repeating the credential prompt is not a diagnosis." }
+            else { $reason+="`nRepository authentication is separate from infobase/Windows authentication. Use -AskRepositoryCredential or -RepositoryUserName." }
         }
         throw $reason
     } finally {
@@ -170,7 +187,14 @@ try {
     }
     if (-not $DesignerPath) { $DesignerPath = Read-Host 'Full path to 1cv8.exe' }
     if (-not $EdtCliPath) { $EdtCliPath = Read-Host 'Full path to 1cedtcli.exe' }
-    foreach ($value in @($Infobase,$TargetDirectory,$DesignerPath,$EdtCliPath,$ProjectName,$UserName,$RepositoryUserName)) { Assert-SingleLine $value 'Parameter' }
+    foreach ($value in @($Infobase,$TargetDirectory,$DesignerPath,$EdtCliPath,$ProjectName,$UserName,$RepositoryUserName,$RepositoryAddress)) { Assert-SingleLine $value 'Parameter' }
+    if ($RepositoryAddress) {
+        if ($InfobaseType -eq 'Repository') { throw 'For Repository source use Infobase for the repository address.' }
+        $repositoryUri=$null
+        if ($RepositoryAddress -match '^(?i:tcp|https?)://') {
+            if (-not [Uri]::TryCreate($RepositoryAddress,[UriKind]::Absolute,[ref]$repositoryUri) -or -not $repositoryUri.Host -or $repositoryUri.UserInfo -or $repositoryUri.Query -or $repositoryUri.Fragment) { throw 'RepositoryAddress must not contain credentials, query or fragment.' }
+        } elseif ($RepositoryAddress -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\])') { throw 'Use a TCP/HTTP(S) repository URL or an absolute file repository path.' }
+    }
     Assert-ProjectName $ProjectName
     if ($ProjectRemoteUrl) { Assert-ProjectRemote $ProjectRemoteUrl }
     if ($NoExtensions -and $Extensions) { throw 'Use Extensions or NoExtensions, not both.' }

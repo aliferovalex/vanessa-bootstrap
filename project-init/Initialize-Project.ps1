@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
 Creates Git sources in EDT format from an existing 1C infobase.
@@ -38,6 +38,7 @@ param(
     [switch]$AskCredential,
     [switch]$AskRepositoryCredential,
     [switch]$UseOSAuthentication,
+    [switch]$NonInteractive,
     [switch]$Preview,
     [switch]$SkipInitialCommit,
     [switch]$NoGitLfs,
@@ -73,6 +74,43 @@ function Assert-ProjectName([string]$Value) {
     if ($Value -notmatch '^[\p{L}\p{N}_][\p{L}\p{N}_.-]*$' -or $Value.EndsWith('.') -or $Value -match '^(?i:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)') {
         throw "Invalid project/folder name: $Value"
     }
+}
+function Read-InitializationChoice([string]$Prompt,[bool]$Default) {
+    $defaultNumber=if($Default){'1'}else{'2'}
+    Write-Host $Prompt
+    Write-Host '  1. Yes'
+    Write-Host '  2. No'
+    while($true) {
+        $answer=(Read-Host "Choice (1-2) [$defaultNumber]").Trim()
+        if(-not $answer){return $Default}
+        if($answer -in @('1','y','yes')){return $true}
+        if($answer -in @('2','n','no')){return $false}
+        Write-Host 'Enter 1 or 2.'
+    }
+}
+function Set-InitializationAuthentication {
+    param([Collections.IDictionary]$Provided,[string]$SourceType,[bool]$SkipQuestions)
+    if($SourceType -eq 'Repository' -or $SkipQuestions){return}
+    foreach($name in @('UseOSAuthentication','AskCredential','UserName','Password')) {
+        if($Provided.ContainsKey($name)){return}
+    }
+    if(Read-InitializationChoice 'Use Windows/OS authentication for the infobase?' $true) {
+        $script:UseOSAuthentication=$true
+    } else {
+        $script:AskCredential=$true
+    }
+}
+function Set-InitializationGitOptions {
+    param([Collections.IDictionary]$Provided,[bool]$InPlace,[string]$CurrentBranch,[bool]$SkipQuestions)
+    if($InPlace -and -not $Provided.ContainsKey('FreshHistory') -and -not $SkipQuestions) {
+        Write-Host 'Fresh history creates a new Git history. The existing history is backed up before replacement.'
+        $script:FreshHistory=Read-InitializationChoice 'Create fresh Git history instead of keeping template history?' $false
+    }
+    $defaultBranch=if($InPlace -and -not $FreshHistory){$CurrentBranch}else{'main'}
+    if(-not $Provided.ContainsKey('GitBranch') -and -not $SkipQuestions) {
+        $script:GitBranch=Read-Host "Git branch [$defaultBranch]"
+    }
+    if(-not $GitBranch){$script:GitBranch=$defaultBranch}
 }
 function Quote-NativeArgument([string]$Value) {
     # Windows CommandLineToArgvW / CRT escaping, including empty strings.
@@ -176,11 +214,15 @@ function Import-Edt([string]$Xml,[string]$Name,[string]$Destination,[string]$Bas
 }
 
 try {
+    if($NonInteractive -and (-not $InfobaseType -or -not $Infobase -or -not $DesignerPath -or -not $EdtCliPath)) {
+        throw 'NonInteractive requires InfobaseType, Infobase, DesignerPath and EdtCliPath.'
+    }
     if (-not $InfobaseType) { $InfobaseType = Select-ProjectSourceType }
     if ($InfobaseType -ne 'Repository' -and ($AskRepositoryCredential -or $RepositoryUserName -or $RepositoryPassword -or $RepositoryAddress)) {
         Write-Warning 'Repository parameters are ignored for File/Server sources: the current infobase configuration is exported without explicit repository authentication.'
         $AskRepositoryCredential=$false;$RepositoryUserName='';$RepositoryPassword=$null;$RepositoryAddress=''
     }
+    Set-InitializationAuthentication $PSBoundParameters $InfobaseType ([bool]($NonInteractive -or $Preview))
     if ($UseOSAuthentication) {
         if ($InfobaseType -eq 'Repository') { throw 'UseOSAuthentication requires a File or Server infobase; repository accounts use RepositoryUserName.' }
         if ($AskCredential -or $PSBoundParameters.ContainsKey('UserName') -or $PSBoundParameters.ContainsKey('Password')) {
@@ -228,12 +270,8 @@ try {
     elseif (Test-Path -LiteralPath $TargetDirectory) { throw 'TargetDirectory already exists. Choose a new directory; existing files are never overwritten.' }
     $parent = Split-Path -Parent $TargetDirectory
     if (-not (Test-Path -LiteralPath $parent -PathType Container)) { throw 'Target parent directory must exist.' }
+    Set-InitializationGitOptions $PSBoundParameters $inPlace $(if($inPlace){$originalState.branch}else{''}) ([bool]($NonInteractive -or $Preview))
     if ($inPlace -and $FreshHistory) { Assert-FreshHistoryRepository $GitPath $TargetDirectory $originalState }
-    $defaultBranch=if ($inPlace -and -not $FreshHistory) { $originalState.branch } else { 'main' }
-    if (-not $GitBranch -and $interactiveRun -and -not $Preview) {
-        $GitBranch=Read-Host ("Git branch [$defaultBranch]")
-    }
-    if (-not $GitBranch) { $GitBranch=$defaultBranch }
     Assert-InitializationBranch $GitPath $(if($inPlace){$TargetDirectory}else{$parent}) $GitBranch $(if($inPlace -and -not $FreshHistory){$originalState.branch}else{''})
     $repositories=@()
     if ($InfobaseType -eq 'Repository') {
@@ -271,12 +309,18 @@ try {
         [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;InfobaseAuthentication=$(if($UseOSAuthentication){'OS'}elseif($AskCredential -or $UserName -or $Password){'Infobase'}else{'Default'});Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
         return
     }
-    if ($UserName -and -not $Password) { $Password = Read-Host 'Infobase password (empty allowed)' -AsSecureString }
+    if ($UserName -and -not $Password) {
+        if($NonInteractive -and -not $AskCredential){throw 'NonInteractive requires Password with UserName (use an empty SecureString for an empty password).'}
+        $Password = Read-Host 'Infobase password (empty allowed)' -AsSecureString
+    }
     if ($Password) {
         $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
         try { $secret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
     }
-    if ($RepositoryUserName -and -not $RepositoryPassword) { $RepositoryPassword = Read-Host 'Repository password (empty allowed)' -AsSecureString }
+    if ($RepositoryUserName -and -not $RepositoryPassword) {
+        if($NonInteractive -and -not ($AskRepositoryCredential -or $AskCredential)){throw 'NonInteractive requires RepositoryPassword with RepositoryUserName.'}
+        $RepositoryPassword = Read-Host 'Repository password (empty allowed)' -AsSecureString
+    }
     if ($RepositoryPassword) {
         $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($RepositoryPassword)
         try { $repositorySecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
@@ -467,7 +511,7 @@ try {
     } else { Move-Item -LiteralPath $staging -Destination $TargetDirectory }
     $projectPublished=$true
     if ($ProjectRemoteUrl) { Set-ProjectRemote $GitPath $TargetDirectory $ProjectRemoteUrl }
-    elseif ($inPlace -and $interactiveRun) {
+    elseif ($inPlace -and $interactiveRun -and -not $NonInteractive) {
         $remote=Read-Host 'Project Git URL (empty: keep current origin; configure it before pushing)'
         if ($remote) { Set-ProjectRemote $GitPath $TargetDirectory $remote }
     }

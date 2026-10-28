@@ -12,7 +12,7 @@ function Clone([string]$Name) {
     if ($LASTEXITCODE) { throw 'Cannot clone fixture.' }
     return $path
 }
-$common=@{InfobaseType='File';Infobase=(Join-Path $TestRoot 'source base');DesignerPath=(Join-Path $TestRoot 'tool.exe');EdtCliPath=(Join-Path $TestRoot 'tool.exe');ProjectName='Demo';GitUserName='Test';GitUserEmail='test@example.invalid';TimeoutSeconds=30}
+$common=@{NonInteractive=$true;InfobaseType='File';Infobase=(Join-Path $TestRoot 'source base');DesignerPath=(Join-Path $TestRoot 'tool.exe');EdtCliPath=(Join-Path $TestRoot 'tool.exe');ProjectName='Demo';GitUserName='Test';GitUserEmail='test@example.invalid';TimeoutSeconds=30}
 $clone=Clone 'in-place'
 $head=(& git -C $clone rev-parse HEAD);$branch=(& git -C $clone branch --show-current)
 $origin=(& git -C $clone remote get-url origin)

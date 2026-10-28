@@ -54,7 +54,7 @@ $base=Join-Path $TestRoot 'source base'
 New-Item -ItemType Directory -Path $base | Out-Null
 [IO.File]::WriteAllBytes((Join-Path $base '1Cv8.1CD'),[byte[]]@())
 $script=Join-Path $PSScriptRoot 'Initialize-Project.ps1'
-$common=@{InfobaseType='File';Infobase=$base;DesignerPath=$exe;EdtCliPath=$exe;ProjectName='TestConfig';GitUserName='Initializer test';GitUserEmail='initializer@example.invalid';TimeoutSeconds=30}
+$common=@{NonInteractive=$true;InfobaseType='File';Infobase=$base;DesignerPath=$exe;EdtCliPath=$exe;ProjectName='TestConfig';GitUserName='Initializer test';GitUserEmail='initializer@example.invalid';TimeoutSeconds=30}
 function Assert($condition,$message){if(-not $condition){throw $message}}
 $preview=Join-Path $TestRoot 'preview'
 & $script @common -TargetDirectory $preview -Preview | Out-Null
@@ -175,6 +175,7 @@ try {
  foreach($entry in @(@('1','File'),@('2','Server'),@('3','Repository'))) {
   $script:sourceNumber=$entry[0]
   $menuOptions=$common.Clone();$menuOptions.Remove('InfobaseType')
+  $menuOptions.Remove('NonInteractive')
   if($entry[1] -eq 'Repository'){$menuOptions.Infobase='tcp://test-server:1543/test-repository'}
   elseif($entry[1] -eq 'Server'){$menuOptions.Infobase='test-server:7541\test-base'}
   $menuPreview=& $script @menuOptions -TargetDirectory (Join-Path $TestRoot 'menu-preview') -GitBranch main -Preview

@@ -38,7 +38,7 @@ $extensions=Join-Path $TestRoot 'repositories.json'
 $trace=Join-Path $TestRoot 'trace.txt';$env:PROJECT_TEST_TRACE=$trace
 $target=Join-Path $TestRoot 'project'
 $template=Split-Path $PSScriptRoot -Parent
-$common=@{InfobaseType='Repository';Infobase='http://example.invalid/repo/repo.1ccr/Main';RepositoryVersion=12;ExtensionRepositoryFile=$extensions;RepositoryUserName='reader';RepositoryPassword=(ConvertTo-SecureString 'secret-test' -AsPlainText -Force);DesignerPath=$exe;EdtCliPath=$exe;TemplateDirectory=$template;ProjectName='Demo';TargetDirectory=$target;GitUserName='Test';GitUserEmail='test@example.invalid';TimeoutSeconds=30}
+$common=@{NonInteractive=$true;InfobaseType='Repository';Infobase='http://example.invalid/repo/repo.1ccr/Main';RepositoryVersion=12;ExtensionRepositoryFile=$extensions;RepositoryUserName='reader';RepositoryPassword=(ConvertTo-SecureString 'secret-test' -AsPlainText -Force);DesignerPath=$exe;EdtCliPath=$exe;TemplateDirectory=$template;ProjectName='Demo';TargetDirectory=$target;GitUserName='Test';GitUserEmail='test@example.invalid';TimeoutSeconds=30}
 $common.ProjectName='Demo_'+[char]0x0422
 function Assert($condition,$message){if(-not $condition){throw $message}}
 try {

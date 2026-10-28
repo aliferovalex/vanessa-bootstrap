@@ -3,7 +3,7 @@
 $ErrorActionPreference='Stop';Set-StrictMode -Version Latest
 [void][IO.Directory]::CreateDirectory($TestRoot)
 $template=Split-Path $PSScriptRoot -Parent;$script=Join-Path $PSScriptRoot 'Initialize-Project.ps1'
-$common=@{InfobaseType='File';Infobase=(Join-Path $ToolsRoot 'source base');DesignerPath=(Join-Path $ToolsRoot 'tool.exe');EdtCliPath=(Join-Path $ToolsRoot 'tool.exe');ProjectName='Demo';GitUserName='Test';GitUserEmail='test@example.invalid';TimeoutSeconds=30;NoExtensions=$true}
+$common=@{NonInteractive=$true;InfobaseType='File';Infobase=(Join-Path $ToolsRoot 'source base');DesignerPath=(Join-Path $ToolsRoot 'tool.exe');EdtCliPath=(Join-Path $ToolsRoot 'tool.exe');ProjectName='Demo';GitUserName='Test';GitUserEmail='test@example.invalid';TimeoutSeconds=30;NoExtensions=$true}
 function Assert($condition,$message){if(-not $condition){throw $message}}
 $clone=Join-Path $TestRoot 'clone'; & git clone --no-hardlinks $template $clone
 if ($LASTEXITCODE) {throw 'Clone failed'}

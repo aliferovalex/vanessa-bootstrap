@@ -28,7 +28,6 @@ param(
     [string]$UserName,
     [Security.SecureString]$Password,
     [string]$RepositoryUserName,
-    [string]$RepositoryAddress,
     [Security.SecureString]$RepositoryPassword,
     [ValidateRange(-1,2147483647)][int]$RepositoryVersion=-1,
     [string]$ExtensionRepositoryFile,
@@ -186,8 +185,8 @@ function Export-Xml([string]$Directory,[string]$Label,[switch]$AllExtensions) {
         }
     } catch {
         $reason = $_.Exception.Message
-        if (Test-Path -LiteralPath $log) { $reason += "`n" + (Protect-Text ([IO.File]::ReadAllText($log))) }
-        $reason+="`nThe repository connection warning alone does not identify the cause of an export failure. Check $Label.result.json, $Label.export.json and the Designer log. For a slow export, retry with a larger -TimeoutSeconds value."
+        if ($InfobaseType -eq 'Repository' -and (Test-Path -LiteralPath $log)) { $reason += "`n" + (Protect-Text ([IO.File]::ReadAllText($log))) }
+        $reason+="`nCheck $Label.result.json, $Label.export.json and $Label.designer.log. For a slow export, retry with a larger -TimeoutSeconds value."
         throw $reason
     } finally {
         $files=@(Get-ChildItem -LiteralPath $Directory -Recurse -File)
@@ -218,9 +217,10 @@ try {
         throw 'NonInteractive requires InfobaseType, Infobase, DesignerPath and EdtCliPath.'
     }
     if (-not $InfobaseType) { $InfobaseType = Select-ProjectSourceType }
-    if ($InfobaseType -ne 'Repository' -and ($AskRepositoryCredential -or $RepositoryUserName -or $RepositoryPassword -or $RepositoryAddress)) {
-        Write-Warning 'Repository parameters are ignored for File/Server sources: the current infobase configuration is exported without explicit repository authentication.'
-        $AskRepositoryCredential=$false;$RepositoryUserName='';$RepositoryPassword=$null;$RepositoryAddress=''
+    if ($InfobaseType -ne 'Repository') {
+        foreach($name in @('AskRepositoryCredential','RepositoryUserName','RepositoryPassword','RepositoryVersion','ExtensionRepositoryFile')) {
+            if($PSBoundParameters.ContainsKey($name)){throw "$name requires -InfobaseType Repository."}
+        }
     }
     Set-InitializationAuthentication $PSBoundParameters $InfobaseType ([bool]($NonInteractive -or $Preview))
     if ($UseOSAuthentication) {
@@ -237,14 +237,7 @@ try {
     }
     if (-not $DesignerPath) { $DesignerPath = Read-Host 'Full path to 1cv8.exe' }
     if (-not $EdtCliPath) { $EdtCliPath = Read-Host 'Full path to 1cedtcli.exe' }
-    foreach ($value in @($Infobase,$TargetDirectory,$DesignerPath,$EdtCliPath,$ProjectName,$UserName,$RepositoryUserName,$RepositoryAddress)) { Assert-SingleLine $value 'Parameter' }
-    if ($RepositoryAddress) {
-        if ($InfobaseType -eq 'Repository') { throw 'For Repository source use Infobase for the repository address.' }
-        $repositoryUri=$null
-        if ($RepositoryAddress -match '^(?i:tcp|https?)://') {
-            if (-not [Uri]::TryCreate($RepositoryAddress,[UriKind]::Absolute,[ref]$repositoryUri) -or -not $repositoryUri.Host -or $repositoryUri.UserInfo -or $repositoryUri.Query -or $repositoryUri.Fragment) { throw 'RepositoryAddress must not contain credentials, query or fragment.' }
-        } elseif ($RepositoryAddress -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\])') { throw 'Use a TCP/HTTP(S) repository URL or an absolute file repository path.' }
-    }
+    foreach ($value in @($Infobase,$TargetDirectory,$DesignerPath,$EdtCliPath,$ProjectName,$UserName,$RepositoryUserName)) { Assert-SingleLine $value 'Parameter' }
     Assert-ProjectName $ProjectName
     if ($ProjectRemoteUrl) { Assert-ProjectRemote $ProjectRemoteUrl }
     if ($NoExtensions -and $Extensions) { throw 'Use Extensions or NoExtensions, not both.' }

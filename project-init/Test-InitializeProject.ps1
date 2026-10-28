@@ -183,32 +183,24 @@ try {
  }
 } finally { Remove-Item Function:\Read-Host }
 Write-Host 'PASS: interactive source selection applied to File, Server and Repository initialization.'
-$oldRepoUser=$env:INIT_TEST_REPO_USER;$oldRepoPassword=$env:INIT_TEST_REPO_PASSWORD
-$oldUser=$env:INIT_TEST_USER;$oldPassword=$env:INIT_TEST_PASSWORD;$oldAuth=$env:INIT_TEST_AUTH
+function Read-Host {throw 'Invalid source options must not prompt'}
 try {
- $env:INIT_TEST_REPO_USER='repository user';$env:INIT_TEST_REPO_PASSWORD='synthetic repo password'
- function Read-Host {
-  param($Prompt,[switch]$AsSecureString)
-  if($Prompt -like 'Repository*'){throw 'Unexpected repository credential prompt for an infobase source'}
-  if($Prompt -like 'Infobase user name*'){return $env:INIT_TEST_USER}
-  if($AsSecureString){
-   $text=if($Prompt -like 'Repository password*'){$env:INIT_TEST_REPO_PASSWORD}else{$env:INIT_TEST_PASSWORD}
-   return (ConvertTo-SecureString $text -AsPlainText -Force)
+ foreach($option in @(@{AskRepositoryCredential=$true},@{RepositoryUserName='reader'},@{RepositoryPassword=(New-Object Security.SecureString)},@{RepositoryVersion=2},@{ExtensionRepositoryFile='unused.json'})) {
+  foreach($sourceType in @('File','Server')) {
+   $invalid=$common.Clone();$invalid.InfobaseType=$sourceType;$failed=$false
+   try {& $script @invalid @option -TargetDirectory (Join-Path $TestRoot 'invalid-source-options') -Preview} catch {
+    $failed=$_.Exception.Message -like '*requires -InfobaseType Repository.*'
+   }
+   Assert $failed 'Repository-only option accepted for infobase source'
   }
-  throw 'Unexpected authentication prompt'
  }
- foreach($mode in @('OS','Infobase')){
-  $authOptions=@{AskRepositoryCredential=$true;RepositoryUserName='obsolete user';RepositoryAddress='tcp://unused.invalid:1543/repo'}
-  if($mode -eq 'OS'){$authOptions.UseOSAuthentication=$true;$env:INIT_TEST_AUTH='/WA+';$env:INIT_TEST_USER=$null}
-  else{$authOptions.AskCredential=$true;$env:INIT_TEST_AUTH='/WA-';$env:INIT_TEST_USER='infobase user';$env:INIT_TEST_PASSWORD='synthetic infobase password'}
-  & $script @common @authOptions -TargetDirectory (Join-Path $TestRoot ('repo-credentials-'+$mode)) -Extensions ExtTwo -NoGitLfs
+ $failed=$false
+ try {& $script @common -RepositoryAddress 'tcp://unused.invalid:1543/repo' -Preview} catch {
+  $failed=$_.Exception.Message -like '*RepositoryAddress*'
  }
-} finally {
- Remove-Item Function:\Read-Host
- $env:INIT_TEST_REPO_USER=$oldRepoUser;$env:INIT_TEST_REPO_PASSWORD=$oldRepoPassword
- $env:INIT_TEST_USER=$oldUser;$env:INIT_TEST_PASSWORD=$oldPassword;$env:INIT_TEST_AUTH=$oldAuth
-}
-Write-Host 'PASS: obsolete repository parameters ignored without prompting; local main/extension export with OS and infobase authentication despite repository warning.'
+ Assert $failed 'Removed RepositoryAddress parameter still accepted'
+} finally {Remove-Item Function:\Read-Host}
+Write-Host 'PASS: repository-only options rejected for File/Server; obsolete RepositoryAddress removed; no prompts.'
 $oldDumpFail=$env:INIT_TEST_DUMP_FAIL
 try {
  $env:INIT_TEST_DUMP_FAIL='1';$failed=$false

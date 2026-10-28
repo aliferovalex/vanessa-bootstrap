@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 [CmdletBinding()]param([Parameter(Mandatory=$true)][string]$TestRoot)
 $ErrorActionPreference='Stop'
 $tokens=$null;$parseErrors=$null
@@ -14,16 +14,15 @@ function Assert($value,$message){if(-not $value){throw $message}}
 function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label){
  $script:captured=$Arguments
  $dir=$Arguments[[Array]::IndexOf($Arguments,'/DumpConfigToFiles')+1]
- if($script:failure){throw 'Timeout: synthetic export'}
  [IO.File]::WriteAllText((Join-Path $dir 'Configuration.xml'),'<MetaDataObject/>')
  [IO.File]::WriteAllText($Arguments[[Array]::IndexOf($Arguments,'/Out')+1],'Configuration repository connection not established')
+ if($script:failure){throw 'Timeout: synthetic export'}
 }
 $script:failure=$false
 $work=[IO.Path]::GetFullPath($TestRoot);[void][IO.Directory]::CreateDirectory($work)
 $utf8=[Text.UTF8Encoding]::new($false);$DesignerPath='C:\tools\1cv8.exe';$connectionOption='/S';$Infobase='server:7541\test'
 $InfobaseType='Server'
 $UseOSAuthentication=$true;$UserName='';$Password=$null;$secret=$null
-$RepositoryAddress='tcp://repo.invalid:3542/ka/release/general'
 $RepositoryUserName=([string][char]0x0410)+' Name Surname';$repositorySecret='synthetic password " with spaces\'
 Export-Xml (Join-Path $work 'main') 'main'
 function Check-Order {
@@ -49,10 +48,11 @@ Assert ($secret -notin $safe -and $repositorySecret -notin $safe) 'One of two pa
 $InfobaseType='Repository';$connectionOption='/F';$UserName='';$Password=$null;$secret=$null
 Export-Xml (Join-Path $work 'unbound-read-base') 'unbound'
 Assert ('/ConfigurationRepositoryN' -notin $script:captured -and '/ConfigurationRepositoryF' -notin $script:captured -and '/ConfigurationRepositoryP' -notin $script:captured) 'Repository credentials passed to an unbound read base'
-$script:failure=$true;$caught=''
+$InfobaseType='Server';$script:failure=$true;$caught=''
 try {Export-Xml (Join-Path $work 'partial') 'partial'}catch{$caught=$_.Exception.Message}
 Assert ($caught -like '*Timeout: synthetic export*') 'Export failure swallowed'
-Assert ($caught -notlike '*Use -AskRepositoryCredential*') 'Misleading repository authentication hint'
+Assert ($caught -notmatch '(?i)repository') 'Repository text in infobase export failure'
+Assert ([IO.File]::ReadAllText((Join-Path $work 'partial.designer.log')) -like '*repository*') 'Original platform log lost'
 Assert (Test-Path (Join-Path $work 'partial.export.json')) 'Missing partial-export diagnostics'
 Write-Host 'PASS: local export without repository arguments; repository warning with exit zero; main/extensions; password redaction; failure preserved with diagnostics. No native tools executed.'
 # Exercise actual process exit/timeout diagnostics with PowerShell, not 1C/EDT.

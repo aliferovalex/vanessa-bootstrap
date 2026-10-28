@@ -32,8 +32,8 @@ class Tool {
    File.WriteAllText(V(a,"/Out"),"done");
   }else if(a.Contains("help")){Console.WriteLine("import --configuration-files --project-name --base-project-name --version");return 0;}
   else if(a.Contains("import")){
-   string name=V(a,"--project-name");stage="edt-import-"+name;
-   string root=Path.Combine(V(a,"-data"),name);Directory.CreateDirectory(Path.Combine(root,"src"));
+   string name=V(a,"--project-name")??Path.GetFileName(V(a,"--project"));stage="edt-import-"+name;
+   string root=V(a,"--project")??Path.Combine(V(a,"-data"),name);Directory.CreateDirectory(Path.Combine(root,"src"));
    File.WriteAllText(Path.Combine(root,".project"),"<projectDescription><name>"+name+"</name></projectDescription>");LongFile(root);
   }else return 9;
   File.AppendAllText(Environment.GetEnvironmentVariable("INIT_RESUME_TRACE"),stage+"\n");
@@ -94,11 +94,13 @@ try{
   if($scenario -eq 'legacy'){[IO.File]::Delete($state)}
   if($scenario -eq 'fresh'){[IO.File]::WriteAllText((Join-Path $target '.git/project-initialization.lock'),'abandoned fixture lock')}
   $env:INIT_RESUME_FAIL=''
-  $resumeOptions=@{ResumeFrom=$old.FullName;NonInteractive=$true;NoGitLfs=$true}
+  $resumeOptions=@{ResumeFrom=$old.FullName;NonInteractive=$true;NoGitLfs=$true;EdtMaxHeap='12g'}
   if($scenario -eq 'legacy'){$resumeOptions.TargetDirectory=$target;$resumeOptions.GitUserName='Test';$resumeOptions.GitUserEmail='test@example.invalid'}
   if($scenario -in @('failed-export','failed-extensions')){$resumeOptions.Password=$secret}
   & $initializer @resumeOptions
   $lines=@([IO.File]::ReadAllLines($trace))
+  $heapLaunch=Get-ChildItem -LiteralPath $root -Recurse -File -Filter 'edt-import-ResumeDemo_Ext.launch.json'|Where-Object {$_.FullName -notlike ($old.FullName+'*')}|Select-Object -First 1
+  if($heapLaunch){$launch=[IO.File]::ReadAllText($heapLaunch.FullName)|ConvertFrom-Json;Assert ('-Xmx12g' -in $launch.arguments) 'Heap argument lost';Assert ([Array]::IndexOf($launch.arguments,'-vmargs') -lt [Array]::IndexOf($launch.arguments,'-command')) 'VM arguments after command'}
   if($scenario -eq 'repository'){Assert (@($lines|Where-Object {$_ -eq 'snapshot'}).Count -eq 2) 'Repository snapshots repeated during resume'}
   Assert (@($lines|Where-Object {$_ -eq 'dump-main'}).Count -eq $(if($scenario -in @('failed-export','failed-extensions')){2}else{1})) 'Incorrect export reuse'
   Assert (@($lines|Where-Object {$_ -eq 'dump-extensions'}).Count -eq $(if($scenario -eq 'failed-extensions'){2}else{1})) 'Extension export repeated'

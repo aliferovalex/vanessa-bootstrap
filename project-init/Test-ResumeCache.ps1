@@ -24,4 +24,13 @@ $receipt=Join-Path $older 'dump-extensions.result.json'
 [IO.File]::WriteAllText($receipt,'{"exitCode":0,"timedOut":true}')
 $snapshot=Get-InitializationCachedSnapshot $false
 Assert (-not $snapshot.main -and -not $snapshot.extensions) 'Timed-out snapshot accepted'
+$EdtCliPath='fixture.exe';$EdtIniFile=''
+$data=Join-Path $older 'workspace';$project=Join-Path $data Demo
+[void][IO.Directory]::CreateDirectory((Join-Path $project src));[IO.File]::WriteAllText((Join-Path $project '.project'),'<projectDescription/>')
+[IO.File]::WriteAllText((Join-Path $older 'edt-import-Demo.launch.json'),(@{executable=$EdtCliPath;arguments=@('-data',$data,'--project',$project,'--configuration-files',$oldMain)}|ConvertTo-Json))
+$edtResult=Join-Path $older 'edt-import-Demo.result.json'
+[IO.File]::WriteAllText($edtResult,'{"exitCode":0,"timedOut":false,"memoryExhausted":true}')
+Assert (-not(Get-InitializationCachedEdt Demo $oldMain '')) 'EDT result with background OOM accepted'
+[IO.File]::WriteAllText($edtResult,'{"exitCode":0,"timedOut":false,"memoryExhausted":false}')
+Assert ((Get-InitializationCachedEdt Demo $oldMain '') -eq $project) 'Successful --project result was not reused'
 Write-Host 'PASS: XML generations never mixed, main-only snapshot reused, timeout rejected.'

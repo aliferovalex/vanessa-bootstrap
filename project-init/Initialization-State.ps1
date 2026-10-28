@@ -11,7 +11,7 @@ function Get-InitArgument($Arguments,[string]$Name) {
 }
 function Get-InitSettingNames {
     @('InfobaseType','Infobase','TargetDirectory','TemplateDirectory','ProjectRemoteUrl','GitBranch','FreshHistory',
-      'DesignerPath','EdtCliPath','EdtIniFile','RegisterEdtStart','RestartEdtStart','EdtWorkspaceDirectory','GitPath',
+      'DesignerPath','EdtCliPath','EdtIniFile','EdtMaxHeap','RegisterEdtStart','RestartEdtStart','EdtWorkspaceDirectory','GitPath',
       'ProjectName','UserName','RepositoryUserName','RepositoryVersion','ExtensionRepositoryFile','Extensions',
       'SelectExtensions','NoExtensions','AskCredential','AskRepositoryCredential','UseOSAuthentication','NoGitLfs',
       'SkipInitialCommit','GitUserName','GitUserEmail','TimeoutSeconds')
@@ -92,6 +92,7 @@ function Get-InitializationCachedExport([string]$Label,[bool]$AllExtensions,[str
         $result=Read-InitJson (Join-Path $directory ($Label+'.result.json'))
         $launch=Read-InitJson (Join-Path $directory ($Label+'.launch.json'))
         if(-not $result -or $result.timedOut -or $result.exitCode -ne 0 -or -not $launch){continue}
+        if($result.PSObject.Properties['memoryExhausted'] -and $result.memoryExhausted){continue}
         $path=Get-InitArgument $launch.arguments '/DumpConfigToFiles'
         if(-not $path -or -not [IO.Path]::GetFullPath($path).StartsWith($directory.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)){continue}
         if(-not(Test-Path -LiteralPath $path -PathType Container)){continue}
@@ -115,8 +116,12 @@ function Get-InitializationCachedEdt([string]$Name,[string]$Xml,[string]$BasePro
         $result=Read-InitJson (Join-Path $directory ($label+'.result.json'))
         $launch=Read-InitJson (Join-Path $directory ($label+'.launch.json'))
         if(-not $result -or $result.timedOut -or $result.exitCode -ne 0 -or -not $launch){continue}
+        if($result.PSObject.Properties['memoryExhausted'] -and $result.memoryExhausted){continue}
+        $projectName=Get-InitArgument $launch.arguments '--project-name'
+        $projectPath=Get-InitArgument $launch.arguments '--project'
+        if(-not $projectName -and $projectPath){$projectName=Split-Path $projectPath -Leaf}
         if($launch.executable -ne $EdtCliPath -or (Get-InitArgument $launch.arguments '--configuration-files') -ne $Xml -or
-            (Get-InitArgument $launch.arguments '--project-name') -ne $Name -or
+            $projectName -ne $Name -or
             (Get-InitArgument $launch.arguments '--base-project-name') -ne $BaseProject -or
             (Get-InitArgument $launch.arguments '-ini-file') -ne [string]$EdtIniFile){continue}
         $data=Get-InitArgument $launch.arguments '-data';$path=Join-Path $data $Name
@@ -126,6 +131,13 @@ function Get-InitializationCachedEdt([string]$Name,[string]$Xml,[string]$BasePro
         if((Test-Path -LiteralPath (Join-Path $path '.project')) -and (Test-Path -LiteralPath (Join-Path $path 'src') -PathType Container)){return $path}
     }
     return ''
+}
+function Add-EdtHeapArguments([string[]]$Arguments,[string]$MaxHeap){
+    if(-not $MaxHeap){return $Arguments}
+    $index=[Array]::IndexOf($Arguments,'-command')
+    if($index -lt 0){return @($Arguments)+@('-vmargs',('-Xmx'+$MaxHeap))}
+    $prefix=if($index -gt 0){@($Arguments[0..($index-1)])}else{@()}
+    return @($prefix)+@('-vmargs',('-Xmx'+$MaxHeap))+@($Arguments[$index..($Arguments.Count-1)])
 }
 function Copy-InitializationTree([string]$Source,[string]$Destination,[string]$Label) {
     # Robocopy supports long paths without changing the Windows machine policy.

@@ -20,6 +20,7 @@ param(
     [string]$DesignerPath,
     [string]$EdtCliPath,
     [string]$EdtIniFile,
+    [ValidatePattern('^[1-9][0-9]*[mMgG]$')][string]$EdtMaxHeap,
     [switch]$RegisterEdtStart,
     [switch]$RestartEdtStart,
     [string]$EdtWorkspaceDirectory,
@@ -58,6 +59,7 @@ $repositorySecret = $null
 . (Join-Path $PSScriptRoot 'Credentials.ps1')
 . (Join-Path $PSScriptRoot 'Source-Selection.ps1')
 . (Join-Path $PSScriptRoot 'Initialization-State.ps1')
+. (Join-Path $PSScriptRoot 'Native-Output.ps1')
 $resume=$null;$resumeExportsReady=$false;$selectedExtensionNames=$null;$resumeSelectionOverride=$false;$work=$null
 $inPlace=$false;$initializationLock=$null;$initializationLockPath=$null;$projectPublished=$false
 $interactiveRun=-not $PSBoundParameters.ContainsKey('InfobaseType')
@@ -143,30 +145,54 @@ function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$Un
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
-    if ($UnicodeOutput) { $info.StandardOutputEncoding = [Text.Encoding]::UTF8 }
+    if ($UnicodeOutput) { $info.StandardOutputEncoding = [Text.Encoding]::UTF8;$info.StandardErrorEncoding=[Text.Encoding]::UTF8 }
     $proc = New-Object Diagnostics.Process
     $proc.StartInfo = $info
+    $capture=$null;$started=$false;$timedOut=$false;$memoryExhausted=$false
+    $stdoutPath=Join-Path $work ($Label+'.stdout.log');$stderrPath=Join-Path $work ($Label+'.stderr.log')
+    $watch=[Diagnostics.Stopwatch]::new();$nextStatus=30.0;$nextLogCheck=0.0
+    $edtLog='';$logPosition=0L;$logTail=''
+    if($Label -like 'edt-*'){
+        $data=Get-InitArgument $Arguments '-data'
+        if($data){$edtLog=Join-Path $data '.metadata\.log';if(Test-Path -LiteralPath $edtLog){$logPosition=(Get-Item -LiteralPath $edtLog).Length}}
+    }
     try {
-        [void]$proc.Start()
-        $stdout = $proc.StandardOutput.ReadToEndAsync()
-        $stderr = $proc.StandardError.ReadToEndAsync()
-        $timedOut=-not $proc.WaitForExit($TimeoutSeconds * 1000)
-        if ($timedOut) {
-            if ($PSVersionTable.PSVersion.Major -ge 7) { $proc.Kill($true) } else {
-                # EDT starts child processes; kill the owned tree, not just the launcher.
-                $killer = Start-Process -FilePath (Join-Path $env:WINDIR 'System32\taskkill.exe') -ArgumentList @('/PID',"$($proc.Id)",'/T','/F') -WindowStyle Hidden -PassThru -Wait
+        Initialize-NativeOutputCapture
+        [void]$proc.Start();$started=$true;$watch.Start()
+        $capture=[ProjectInitializer.OutputCapture]::new($proc,$stdoutPath,$stderrPath,[string[]]@($secret,$repositorySecret))
+        while(-not $proc.WaitForExit(500)){
+            if($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds){$timedOut=$true;break}
+            if($edtLog -and $watch.Elapsed.TotalSeconds -ge $nextLogCheck){
+                $delta=Read-InitializationEdtLog $edtLog ([ref]$logPosition)
+                $logTail+=$delta
+                if($logTail -match 'OutOfMemoryError\s*:\s*(Java heap space|GC overhead limit exceeded)'){$memoryExhausted=$true;break}
+                if($logTail.Length -gt 512){$logTail=$logTail.Substring($logTail.Length-512)}
+                $nextLogCheck=$watch.Elapsed.TotalSeconds+2
             }
-            if (-not $proc.WaitForExit(30000)) { throw "Unable to stop timed-out process: $Label (PID $($proc.Id))." }
+            if($watch.Elapsed.TotalSeconds -ge $nextStatus){
+                $seconds=[int]$watch.Elapsed.TotalSeconds
+                Write-Host ("$Label : waiting, elapsed $seconds s, process $($proc.Id). Logs: $stdoutPath")
+                Write-Text (Join-Path $work ($Label+'.progress.json')) (@{pid=$proc.Id;elapsedSeconds=$seconds;timeoutSeconds=$TimeoutSeconds;edtLog=$edtLog;edtLogBytesRead=$logPosition}|ConvertTo-Json)
+                $nextStatus=$watch.Elapsed.TotalSeconds+30
+            }
         }
-        $out = Protect-Text ($stdout.GetAwaiter().GetResult())
-        $err = Protect-Text ($stderr.GetAwaiter().GetResult())
-        Write-Text (Join-Path $work ($Label + '.stdout.log')) $out
-        Write-Text (Join-Path $work ($Label + '.stderr.log')) $err
-        Write-Text (Join-Path $work ($Label+'.result.json')) (@{exitCode=$proc.ExitCode;timedOut=$timedOut;timeoutSeconds=$TimeoutSeconds}|ConvertTo-Json)
+        if($timedOut -or $memoryExhausted){Stop-InitializationProcess $proc}
+        if(-not $capture.Complete(10000)){throw "Output streams did not close: $Label. Check the CLI process and its logs."}
+        if($edtLog){
+            $logTail+=Read-InitializationEdtLog $edtLog ([ref]$logPosition)
+            if($logTail -match 'OutOfMemoryError\s*:\s*(Java heap space|GC overhead limit exceeded)'){$memoryExhausted=$true}
+        }
+        $out=[IO.File]::ReadAllText($stdoutPath);$err=[IO.File]::ReadAllText($stderrPath)
+        Write-Text (Join-Path $work ($Label+'.result.json')) (@{exitCode=$proc.ExitCode;timedOut=$timedOut;memoryExhausted=$memoryExhausted;timeoutSeconds=$TimeoutSeconds;elapsedSeconds=$watch.Elapsed.TotalSeconds;pid=$proc.Id;edtLog=$edtLog}|ConvertTo-Json)
+        if($memoryExhausted){throw "EDT exhausted Java heap space: $Label. Increase -EdtMaxHeap for the available RAM and continue with -ResumeFrom. EDT log: $edtLog"}
         if ($timedOut) { throw "Timeout: $Label after $TimeoutSeconds seconds. The operation may be incomplete." }
         if ($proc.ExitCode -notin $SuccessExitCodes) { throw "$Label failed (exit $($proc.ExitCode)). $err $out" }
         return $out.Trim()
-    } finally { $proc.Dispose() }
+    } finally {
+        if($started -and -not $proc.HasExited){Stop-InitializationProcess $proc}
+        if($capture){$capture.Dispose()}
+        $watch.Stop();$proc.Dispose()
+    }
 }
 function Export-Xml([string]$Directory,[string]$Label,[switch]$AllExtensions) {
     [void][IO.Directory]::CreateDirectory($Directory)
@@ -204,6 +230,11 @@ function Export-Xml([string]$Directory,[string]$Label,[switch]$AllExtensions) {
 function Import-Edt([string]$Xml,[string]$Name,[string]$Destination,[string]$BaseProject) {
     $edtVersion = ($platformVersion -split '\.')[0..2] -join '.'
     $arguments = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','import','--configuration-files',$Xml,'--project-name',$Name,'--version',$edtVersion)
+    $projectPath=Join-Path $workspace $Name
+    if(Test-Path -LiteralPath $projectPath -PathType Container){
+        $arguments = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','import','--configuration-files',$Xml,'--project',$projectPath,'--version',$edtVersion)
+    }
+    $arguments=Add-EdtHeapArguments $arguments $EdtMaxHeap
     if ($EdtIniFile) { $arguments = @('-ini-file',$EdtIniFile) + $arguments }
     if ($BaseProject) { $arguments += @('--base-project-name',$BaseProject) }
     $source=Get-InitializationCachedEdt $Name $Xml $BaseProject
@@ -332,7 +363,7 @@ try {
         $UserName = $credential.UserName; $Password = $credential.Password
     }
     if ($Preview) {
-        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;InfobaseAuthentication=$(if($UseOSAuthentication){'OS'}elseif($AskCredential -or $UserName -or $Password){'Infobase'}else{'Default'});Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
+        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;InfobaseAuthentication=$(if($UseOSAuthentication){'OS'}elseif($AskCredential -or $UserName -or $Password){'Infobase'}else{'Default'});Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;EdtMaxHeap=$EdtMaxHeap;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
         return
     }
     if ($UserName -and -not $Password -and -not $resumeExportsReady) {
@@ -353,6 +384,7 @@ try {
     }
     $work = Join-Path $parent ('.project-init-'+[guid]::NewGuid().ToString('N'))
     [void][IO.Directory]::CreateDirectory($work)
+    Write-Host ("Diagnostics: $work")
     $workspace = Join-Path $work 'edt-workspace'
     $staging = Join-Path $work 'repository'
     Write-InitializationCheckpoint 'running'
@@ -463,6 +495,7 @@ try {
     $selectedExtensionNames=@($extensionDirs|ForEach-Object {$_.Name})
     Write-InitializationCheckpoint 'running'
     $helpArgs = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','help','import')
+    $helpArgs=Add-EdtHeapArguments $helpArgs $EdtMaxHeap
     if ($EdtIniFile) { $helpArgs = @('-ini-file',$EdtIniFile) + $helpArgs }
     [void](Run-Native $EdtCliPath $helpArgs 'edt-help-import' -UnicodeOutput)
     Import-Edt $xmlMain $ProjectName (Join-Path $staging 'src\cf') ''
@@ -559,6 +592,7 @@ try {
         if (-not $EdtWorkspaceDirectory) { $EdtWorkspaceDirectory = $TargetDirectory + '-workspace' }
         $registration = @{WorkspacePath=$EdtWorkspaceDirectory;RepositoryPath=$TargetDirectory;DisplayName=$ProjectName;EdtExecutablePath=(Join-Path (Split-Path $EdtCliPath -Parent) '1cedt.exe');EdtCliPath=$EdtCliPath;TimeoutSeconds=$TimeoutSeconds;RestartEdtStart=$RestartEdtStart}
         if ($EdtIniFile) { $registration.EdtIniFile=$EdtIniFile }
+        if ($EdtMaxHeap) { $registration.EdtMaxHeap=$EdtMaxHeap }
         try { & (Join-Path $PSScriptRoot 'Register-EdtStartWorkspace.ps1') @registration }
         catch { throw "Repository created at $TargetDirectory. EDT Start registration failed; retry Register-EdtStartWorkspace.ps1 separately. $($_.Exception.Message)" }
     } else { Write-Host 'Open EDT: Import existing projects from the repository. Configure a personal debug infobase separately.' }

@@ -1,6 +1,8 @@
 ﻿#requires -Version 5.1
 [CmdletBinding()]param([Parameter(Mandatory=$true)][string]$TestRoot)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'Native-Output.ps1')
+. (Join-Path $PSScriptRoot 'Initialization-State.ps1')
 $tokens=$null;$parseErrors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'Initialize-Project.ps1'),[ref]$tokens,[ref]$parseErrors)
 if($parseErrors){throw 'Initializer syntax error'}

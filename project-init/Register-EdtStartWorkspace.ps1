@@ -15,6 +15,7 @@ param(
     [string]$RepositoryPath,
     [string]$EdtCliPath,
     [string]$EdtIniFile,
+    [ValidatePattern('^[1-9][0-9]*[mMgG]$')][string]$EdtMaxHeap,
     [string]$EdtStartHome = (Join-Path $env:LOCALAPPDATA '1C\1cedtstart'),
     [switch]$RestartEdtStart,
     [switch]$Preview,
@@ -91,6 +92,7 @@ if($RepositoryPath){
         $commandFile=Join-Path $WorkspacePath 'import-projects.1cedtcli'
         [IO.File]::WriteAllText($commandFile,($commands -join "`n"),$utf8)
         $argsList=@('-data',$WorkspacePath,'-timeout',"$TimeoutSeconds",'-file',$commandFile)
+        if($EdtMaxHeap){$argsList+=@('-vmargs',('-Xmx'+$EdtMaxHeap))}
         if($EdtIniFile){$argsList=@('-ini-file',(Get-Item -LiteralPath $EdtIniFile).FullName)+$argsList}
         $info=New-Object Diagnostics.ProcessStartInfo
         $info.FileName=$EdtCliPath

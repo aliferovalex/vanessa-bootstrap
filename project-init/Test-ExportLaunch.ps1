@@ -11,7 +11,14 @@ foreach($name in @('Quote-NativeArgument','Get-SafeNativeArguments','Protect-Tex
 }
 function Assert($value,$message){if(-not $value){throw $message}}
 # Capture the real argument builder; never start Designer or EDT in this test.
-function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label){$script:captured=$Arguments}
+function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label){
+ $script:captured=$Arguments
+ $dir=$Arguments[[Array]::IndexOf($Arguments,'/DumpConfigToFiles')+1]
+ if($script:failure){throw 'Timeout: synthetic export'}
+ [IO.File]::WriteAllText((Join-Path $dir 'Configuration.xml'),'<MetaDataObject/>')
+ [IO.File]::WriteAllText($Arguments[[Array]::IndexOf($Arguments,'/Out')+1],'Configuration repository connection not established')
+}
+$script:failure=$false
 $work=[IO.Path]::GetFullPath($TestRoot);[void][IO.Directory]::CreateDirectory($work)
 $utf8=[Text.UTF8Encoding]::new($false);$DesignerPath='C:\tools\1cv8.exe';$connectionOption='/S';$Infobase='server:7541\test'
 $InfobaseType='Server'
@@ -27,12 +34,12 @@ function Check-Order {
  }
 }
 Check-Order
-Assert ($script:captured[[Array]::IndexOf($script:captured,'/ConfigurationRepositoryF')+1] -eq $RepositoryAddress) 'Repository address lost'
-Assert ($script:captured[[Array]::IndexOf($script:captured,'/ConfigurationRepositoryN')+1] -eq $RepositoryUserName) 'Unicode/spaces in repository login lost'
+Assert (-not ($script:captured -match '^/ConfigurationRepository')) 'Repository arguments passed during local configuration export'
 Assert ((Quote-NativeArgument $RepositoryUserName) -eq ('"'+$RepositoryUserName+'"')) 'Repository login quoting failed'
 $safe=@(Get-SafeNativeArguments $script:captured)
 Assert ($safe.Count -eq $script:captured.Count -and $repositorySecret -notin $safe) 'Password in launch diagnostics'
-Assert ($safe[[Array]::IndexOf($safe,'/ConfigurationRepositoryP')+1] -eq '[REDACTED]') 'Repository password not redacted'
+$redacted=@(Get-SafeNativeArguments @('/P','ib secret','/ConfigurationRepositoryP',$repositorySecret))
+Assert (($redacted -join ',') -eq '/P,[REDACTED],/ConfigurationRepositoryP,[REDACTED]') 'Password redaction failed'
 $UseOSAuthentication=$false;$UserName='IB user';$secret='synthetic IB password';$Password=ConvertTo-SecureString $secret -AsPlainText -Force
 Export-Xml (Join-Path $work 'extensions') 'extensions' -AllExtensions
 Check-Order
@@ -42,4 +49,24 @@ Assert ($secret -notin $safe -and $repositorySecret -notin $safe) 'One of two pa
 $InfobaseType='Repository';$connectionOption='/F';$UserName='';$Password=$null;$secret=$null
 Export-Xml (Join-Path $work 'unbound-read-base') 'unbound'
 Assert ('/ConfigurationRepositoryN' -notin $script:captured -and '/ConfigurationRepositoryF' -notin $script:captured -and '/ConfigurationRepositoryP' -notin $script:captured) 'Repository credentials passed to an unbound read base'
-Write-Host 'PASS: startup arguments precede export; explicit repository address; Unicode/spaces; main/extensions; redaction of both passwords. No native tools executed.'
+$script:failure=$true;$caught=''
+try {Export-Xml (Join-Path $work 'partial') 'partial'}catch{$caught=$_.Exception.Message}
+Assert ($caught -like '*Timeout: synthetic export*') 'Export failure swallowed'
+Assert ($caught -notlike '*Use -AskRepositoryCredential*') 'Misleading repository authentication hint'
+Assert (Test-Path (Join-Path $work 'partial.export.json')) 'Missing partial-export diagnostics'
+Write-Host 'PASS: local export without repository arguments; repository warning with exit zero; main/extensions; password redaction; failure preserved with diagnostics. No native tools executed.'
+# Exercise actual process exit/timeout diagnostics with PowerShell, not 1C/EDT.
+$node=$ast.Find({param($item) $item -is [Management.Automation.Language.FunctionDefinitionAst] -and $item.Name -eq 'Run-Native'},$false)
+. ([scriptblock]::Create($node.Extent.Text))
+$TimeoutSeconds=1;$shell=Join-Path $PSHOME 'powershell.exe'
+$caught=''
+try {Run-Native $shell @('-NoProfile','-Command','exit 7') 'exit-seven'}catch{$caught=$_.Exception.Message}
+Assert ($caught -like '*failed (exit 7)*') 'Native failure lost'
+$result=[IO.File]::ReadAllText((Join-Path $work 'exit-seven.result.json'))|ConvertFrom-Json
+Assert ($result.exitCode -eq 7 -and -not $result.timedOut) 'Incorrect nonzero-exit diagnostics'
+$caught=''
+try {Run-Native $shell @('-NoProfile','-Command','Start-Sleep -Seconds 10') 'timeout'}catch{$caught=$_.Exception.Message}
+Assert ($caught -like 'Timeout: timeout after 1 seconds*') 'Native timeout lost'
+$result=[IO.File]::ReadAllText((Join-Path $work 'timeout.result.json'))|ConvertFrom-Json
+Assert ($result.timedOut -and $result.timeoutSeconds -eq 1) 'Incorrect timeout diagnostics'
+Write-Host 'PASS: real process nonzero exit and timeout persisted; no 1C/EDT processes started.'

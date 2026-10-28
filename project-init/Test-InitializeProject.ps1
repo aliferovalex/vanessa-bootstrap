@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 # Integration of orchestration with executable doubles for 1C/EDT and real Git.
 [CmdletBinding()]param([string]$TestRoot)
 $ErrorActionPreference='Stop'
@@ -24,12 +24,12 @@ class Tool {
    string authentication=Environment.GetEnvironmentVariable("INIT_TEST_AUTH");
    if(authentication!=null && !a.Contains(authentication)) return 34;
    if(authentication=="/WA+" && (a.Contains("/N") || a.Contains("/P"))) return 35;
-   string repositoryUser=Environment.GetEnvironmentVariable("INIT_TEST_REPO_USER");
-   if(repositoryUser!=null && (Value(a,"/ConfigurationRepositoryN")!=repositoryUser || Value(a,"/ConfigurationRepositoryP")!=Environment.GetEnvironmentVariable("INIT_TEST_REPO_PASSWORD"))) return 36;
+   if(a.Any(x=>x.StartsWith("/ConfigurationRepository"))) return 36;
    string dir=Value(a,"/DumpConfigToFiles");
    if(a.Contains("-AllExtensions")){Xml(Path.Combine(dir,"ExtOne"),"ExtOne"); Xml(Path.Combine(dir,"ExtTwo"),"ExtTwo");}
    else Xml(dir,"Configuration");
-   File.WriteAllText(Value(a,"/Out"),"Export completed"); return 0;
+   File.WriteAllText(Value(a,"/Out"),"Configuration repository connection not established");
+   return Environment.GetEnvironmentVariable("INIT_TEST_DUMP_FAIL")=="1" ? 7 : 0;
   }
   if(a.Contains("help")){Console.WriteLine("import --configuration-files --project-name --base-project-name --version");return 0;}
   if(a.Contains("import")){
@@ -188,7 +188,7 @@ try {
  $env:INIT_TEST_REPO_USER='repository user';$env:INIT_TEST_REPO_PASSWORD='synthetic repo password'
  function Read-Host {
   param($Prompt,[switch]$AsSecureString)
-  if($Prompt -like 'Repository user name*'){return $env:INIT_TEST_REPO_USER}
+  if($Prompt -like 'Repository*'){throw 'Unexpected repository credential prompt for an infobase source'}
   if($Prompt -like 'Infobase user name*'){return $env:INIT_TEST_USER}
   if($AsSecureString){
    $text=if($Prompt -like 'Repository password*'){$env:INIT_TEST_REPO_PASSWORD}else{$env:INIT_TEST_PASSWORD}
@@ -197,7 +197,7 @@ try {
   throw 'Unexpected authentication prompt'
  }
  foreach($mode in @('OS','Infobase')){
-  $authOptions=@{AskRepositoryCredential=$true}
+  $authOptions=@{AskRepositoryCredential=$true;RepositoryUserName='obsolete user';RepositoryAddress='tcp://unused.invalid:1543/repo'}
   if($mode -eq 'OS'){$authOptions.UseOSAuthentication=$true;$env:INIT_TEST_AUTH='/WA+';$env:INIT_TEST_USER=$null}
   else{$authOptions.AskCredential=$true;$env:INIT_TEST_AUTH='/WA-';$env:INIT_TEST_USER='infobase user';$env:INIT_TEST_PASSWORD='synthetic infobase password'}
   & $script @common @authOptions -TargetDirectory (Join-Path $TestRoot ('repo-credentials-'+$mode)) -Extensions ExtTwo -NoGitLfs
@@ -207,5 +207,23 @@ try {
  $env:INIT_TEST_REPO_USER=$oldRepoUser;$env:INIT_TEST_REPO_PASSWORD=$oldRepoPassword
  $env:INIT_TEST_USER=$oldUser;$env:INIT_TEST_PASSWORD=$oldPassword;$env:INIT_TEST_AUTH=$oldAuth
 }
-Write-Host 'PASS: separate repository credentials with OS and infobase authentication, main and extension exports.'
+Write-Host 'PASS: obsolete repository parameters ignored without prompting; local main/extension export with OS and infobase authentication despite repository warning.'
+$oldDumpFail=$env:INIT_TEST_DUMP_FAIL
+try {
+ $env:INIT_TEST_DUMP_FAIL='1';$failed=$false
+ $partialTarget=Join-Path $TestRoot 'partial-export'
+ try {& $script @common -TargetDirectory $partialTarget -NoGitLfs -NoExtensions} catch {
+  $failed=$_.Exception.Message -like '*dump-main failed (exit 7)*'
+ }
+ Assert ($failed -and -not(Test-Path $partialTarget)) 'Partial failed XML export was published'
+ $diagnostics=Get-ChildItem -LiteralPath $TestRoot -Directory -Filter '.project-init-*' |
+  Where-Object {Test-Path (Join-Path $_.FullName 'dump-main.result.json')} |
+  Where-Object {([IO.File]::ReadAllText((Join-Path $_.FullName 'dump-main.result.json'))|ConvertFrom-Json).exitCode -eq 7} |
+  Select-Object -First 1
+ Assert ($null -ne $diagnostics) 'Missing native failure result'
+ $files=[IO.File]::ReadAllText((Join-Path $diagnostics.FullName 'dump-main.export.json'))|ConvertFrom-Json
+ Assert ($files.fileCount -gt 0) 'Missing partial-file diagnostics'
+ Assert (-not(Test-Path (Join-Path $diagnostics.FullName 'edt-import-TestConfig.launch.json'))) 'EDT import started after failed export'
+} finally {$env:INIT_TEST_DUMP_FAIL=$oldDumpFail}
+Write-Host 'PASS: export exit code and partial file diagnostics preserved; failed export never imported or published.'
 Write-Host "PASS: preview, selected extension, base association, Git commit, LFS initial objects and hooks, opt-out, existing target, missing extension, failed import, interactive selection, console credentials with empty/special passwords. Artifacts: $TestRoot"

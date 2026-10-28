@@ -116,12 +116,14 @@ function Run-Native([string]$Exe,[string[]]$Arguments,[string]$Label,[switch]$Un
                 # EDT starts child processes; kill the owned tree, not just the launcher.
                 $killer = Start-Process -FilePath (Join-Path $env:WINDIR 'System32\taskkill.exe') -ArgumentList @('/PID',"$($proc.Id)",'/T','/F') -WindowStyle Hidden -PassThru -Wait
             }
+            if (-not $proc.WaitForExit(30000)) { throw "Unable to stop timed-out process: $Label (PID $($proc.Id))." }
         }
         $out = Protect-Text ($stdout.GetAwaiter().GetResult())
         $err = Protect-Text ($stderr.GetAwaiter().GetResult())
         Write-Text (Join-Path $work ($Label + '.stdout.log')) $out
         Write-Text (Join-Path $work ($Label + '.stderr.log')) $err
-        if ($timedOut) { throw "Timeout: $Label" }
+        Write-Text (Join-Path $work ($Label+'.result.json')) (@{exitCode=$proc.ExitCode;timedOut=$timedOut;timeoutSeconds=$TimeoutSeconds}|ConvertTo-Json)
+        if ($timedOut) { throw "Timeout: $Label after $TimeoutSeconds seconds. The operation may be incomplete." }
         if ($proc.ExitCode -ne 0) { throw "$Label failed (exit $($proc.ExitCode)). $err $out" }
         return $out.Trim()
     } finally { $proc.Dispose() }
@@ -134,23 +136,25 @@ function Export-Xml([string]$Directory,[string]$Label,[switch]$AllExtensions) {
     elseif ($UserName -or $Password) { $arguments += '/WA-' }
     if ($UserName) { $arguments += @('/N',$UserName) }
     if ($secret) { $arguments += @('/P',$secret) }
-    # Repository-source XML is exported from our intentionally unbound read base.
-    if ($InfobaseType -ne 'Repository') {
-        if ($RepositoryAddress) { $arguments += @('/ConfigurationRepositoryF',$RepositoryAddress) }
-        if ($RepositoryUserName) { $arguments += @('/ConfigurationRepositoryN',$RepositoryUserName,'/ConfigurationRepositoryP',[string]$repositorySecret) }
-    }
+    # Read the current local configuration, including uncommitted changes.
+    # Do not explicitly connect to its repository or change its binding.
     $arguments += @('/DisableStartupDialogs','/DisableStartupMessages','/DumpConfigToFiles',$Directory)
     if ($AllExtensions) { $arguments += '-AllExtensions' }
     $arguments += @('/Out',$log)
-    try { [void](Run-Native $DesignerPath $arguments $Label) } catch {
+    try {
+        [void](Run-Native $DesignerPath $arguments $Label)
+        if (-not $AllExtensions -and -not (Test-Path -LiteralPath (Join-Path $Directory 'Configuration.xml') -PathType Leaf)) {
+            throw "$Label returned success but Configuration.xml was not created."
+        }
+    } catch {
         $reason = $_.Exception.Message
         if (Test-Path -LiteralPath $log) { $reason += "`n" + (Protect-Text ([IO.File]::ReadAllText($log))) }
-        if ($reason -match '(?is)(\u0445\u0440\u0430\u043d\u0438\u043b\u0438\u0449|configuration repository)') {
-            if ($RepositoryUserName) { $reason+="`nRepository credentials were supplied. Check the repository address and launch diagnostics; repeating the credential prompt is not a diagnosis." }
-            else { $reason+="`nRepository authentication is separate from infobase/Windows authentication. Use -AskRepositoryCredential or -RepositoryUserName." }
-        }
+        $reason+="`nThe repository connection warning alone does not identify the cause of an export failure. Check $Label.result.json, $Label.export.json and the Designer log. For a slow export, retry with a larger -TimeoutSeconds value."
         throw $reason
     } finally {
+        $files=@(Get-ChildItem -LiteralPath $Directory -Recurse -File)
+        $bytes=0L;foreach($file in $files){$bytes+=$file.Length}
+        Write-Text (Join-Path $work ($Label+'.export.json')) (@{directory=$Directory;fileCount=$files.Count;bytes=$bytes;allExtensions=[bool]$AllExtensions}|ConvertTo-Json)
         if (Test-Path -LiteralPath $log) {
             $text = [IO.File]::ReadAllText($log)
             Write-Text $log (Protect-Text $text)
@@ -173,6 +177,10 @@ function Import-Edt([string]$Xml,[string]$Name,[string]$Destination,[string]$Bas
 
 try {
     if (-not $InfobaseType) { $InfobaseType = Select-ProjectSourceType }
+    if ($InfobaseType -ne 'Repository' -and ($AskRepositoryCredential -or $RepositoryUserName -or $RepositoryPassword -or $RepositoryAddress)) {
+        Write-Warning 'Repository parameters are ignored for File/Server sources: the current infobase configuration is exported without explicit repository authentication.'
+        $AskRepositoryCredential=$false;$RepositoryUserName='';$RepositoryPassword=$null;$RepositoryAddress=''
+    }
     if ($UseOSAuthentication) {
         if ($InfobaseType -eq 'Repository') { throw 'UseOSAuthentication requires a File or Server infobase; repository accounts use RepositoryUserName.' }
         if ($AskCredential -or $PSBoundParameters.ContainsKey('UserName') -or $PSBoundParameters.ContainsKey('Password')) {

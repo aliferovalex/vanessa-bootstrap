@@ -1,16 +1,17 @@
 ﻿#requires -Version 5.1
 <#
 .SYNOPSIS
-Creates Git sources in EDT format from an existing 1C infobase.
+Creates Git sources in EDT or Designer XML format from an existing 1C infobase.
 .DESCRIPTION
-Reads the main configuration and extensions using Designer, then imports XML
-with EDT CLI into an isolated workspace. Does not update the source infobase,
+Reads the main configuration and extensions using Designer, then copies XML
+or imports it with EDT CLI into an isolated workspace. Does not update the source infobase,
 bind repositories, or push Git commits. By default the template clone is
 initialized in place; an explicit different TargetDirectory must not exist.
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('File','Server','Repository')][string]$InfobaseType,
+    [ValidateSet('EDT','XML')][string]$SourceFormat='EDT',
     [string]$Infobase,
     [string]$TargetDirectory,
     [string]$TemplateDirectory,
@@ -291,8 +292,15 @@ try {
         $interactiveExtensions=$SelectExtensions -or (-not $Extensions -and -not $NoExtensions -and -not $NonInteractive)
         Write-Host ('Resume snapshots: '+$resume.directory)
     }
-    if($NonInteractive -and (-not $InfobaseType -or -not $Infobase -or -not $DesignerPath -or -not $EdtCliPath)) {
-        throw 'NonInteractive requires InfobaseType, Infobase, DesignerPath and EdtCliPath.'
+    if(-not $PSBoundParameters.ContainsKey('SourceFormat') -and $interactiveRun -and -not($NonInteractive -or $Preview)){
+        $SourceFormat=Select-ProjectSourceFormat
+    }
+    $SourceFormat=$SourceFormat.ToUpperInvariant()
+    if($SourceFormat -eq 'XML' -and ($RegisterEdtStart -or $RestartEdtStart -or $EdtWorkspaceDirectory)){
+        throw 'EDT Start/workspace options require -SourceFormat EDT.'
+    }
+    if($NonInteractive -and (-not $InfobaseType -or -not $Infobase -or -not $DesignerPath -or ($SourceFormat -eq 'EDT' -and -not $EdtCliPath))) {
+        throw 'NonInteractive requires InfobaseType, Infobase and DesignerPath; EDT format also requires EdtCliPath.'
     }
     if (-not $InfobaseType) { $InfobaseType = Select-ProjectSourceType }
     if ($InfobaseType -ne 'Repository') {
@@ -314,16 +322,18 @@ try {
         $inPlace=$true
     }
     if (-not $DesignerPath) { $DesignerPath = Read-Host 'Full path to 1cv8.exe' }
-    if (-not $EdtCliPath) { $EdtCliPath = Read-Host 'Full path to 1cedtcli.exe' }
+    if ($SourceFormat -eq 'EDT' -and -not $EdtCliPath) { $EdtCliPath = Read-Host 'Full path to 1cedtcli.exe' }
     foreach ($value in @($Infobase,$TargetDirectory,$DesignerPath,$EdtCliPath,$ProjectName,$UserName,$RepositoryUserName)) { Assert-SingleLine $value 'Parameter' }
     Assert-ProjectName $ProjectName
     if ($ProjectRemoteUrl) { Assert-ProjectRemote $ProjectRemoteUrl }
     if ($NoExtensions -and $Extensions) { throw 'Use Extensions or NoExtensions, not both.' }
     if ($SelectExtensions -and ($NoExtensions -or $Extensions)) { throw 'SelectExtensions conflicts with Extensions and NoExtensions.' }
     $DesignerPath = Resolve-Executable $DesignerPath
-    $EdtCliPath = Resolve-Executable $EdtCliPath
-    if ($EdtIniFile) { $EdtIniFile = (Get-Item -LiteralPath $EdtIniFile).FullName; Assert-SingleLine $EdtIniFile 'EdtIniFile' }
-    if ([IO.Path]::GetExtension($EdtCliPath) -ne '.exe') { throw 'This version requires native 1cedtcli.exe (modern EDT CLI), not a bat/cmd wrapper.' }
+    if($SourceFormat -eq 'EDT'){
+        $EdtCliPath = Resolve-Executable $EdtCliPath
+        if ($EdtIniFile) { $EdtIniFile = (Get-Item -LiteralPath $EdtIniFile).FullName; Assert-SingleLine $EdtIniFile 'EdtIniFile' }
+        if ([IO.Path]::GetExtension($EdtCliPath) -ne '.exe') { throw 'This version requires native 1cedtcli.exe (modern EDT CLI), not a bat/cmd wrapper.' }
+    }
     $GitPath = Resolve-Executable $GitPath
     $platformVersion = (Get-Item -LiteralPath $DesignerPath).VersionInfo.FileVersion
     if (-not $platformVersion) { throw 'Cannot determine 1C platform version.' }
@@ -382,7 +392,7 @@ try {
         $UserName = $credential.UserName; $Password = $credential.Password
     }
     if ($Preview) {
-        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;InfobaseAuthentication=$(if($UseOSAuthentication){'OS'}elseif($AskCredential -or $UserName -or $Password){'Infobase'}else{'Default'});Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;EdtMaxHeap=$EdtMaxHeap;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
+        [PSCustomObject]@{Mode='Preview';SourceType=$InfobaseType;SourceFormat=$SourceFormat;InfobaseAuthentication=$(if($UseOSAuthentication){'OS'}elseif($AskCredential -or $UserName -or $Password){'Infobase'}else{'Default'});Source=$Infobase;Platform=$platformVersion;Target=$TargetDirectory;FreshHistory=[bool]$FreshHistory;GitBranch=$GitBranch;MainProject=$ProjectName;Extensions=$(if($NoExtensions){'None'}elseif($Extensions){$Extensions -join ', '}else{'All'});Designer=$DesignerPath;EdtCli=$EdtCliPath;EdtMaxHeap=$EdtMaxHeap;InitialCommit=(-not $SkipInitialCommit);GitLfs=(-not $NoGitLfs);RegisterEdtStart=[bool]$RegisterEdtStart;EdtWorkspace=$(if($RegisterEdtStart){if($EdtWorkspaceDirectory){$EdtWorkspaceDirectory}else{$TargetDirectory+'-workspace'}}else{$null})}
         return
     }
     if ($UserName -and -not $Password -and -not $resumeExportsReady) {
@@ -508,23 +518,31 @@ try {
     foreach ($extension in $extensionDirs) {
         Assert-ProjectName $extension.Name
         $name = $ProjectName+'_'+$extension.Name
-        if ($name -in $names) { throw "Duplicate EDT project name: $name" }
+        if ($name -in $names) { throw "Duplicate project name: $name" }
         $names += $name
     }
     $selectedExtensionNames=@($extensionDirs|ForEach-Object {$_.Name})
     Write-InitializationCheckpoint 'running'
-    $helpArgs = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','help','import')
-    $helpArgs=Add-EdtHeapArguments $helpArgs $EdtMaxHeap
-    if ($EdtIniFile) { $helpArgs = @('-ini-file',$EdtIniFile) + $helpArgs }
-    [void](Run-Native $EdtCliPath $helpArgs 'edt-help-import' -UnicodeOutput)
-    Import-Edt $xmlMain $ProjectName (Join-Path $staging 'src\cf') ''
+    if($SourceFormat -eq 'EDT'){
+        $helpArgs = @('-data',$workspace,'-timeout',"$TimeoutSeconds",'-command','help','import')
+        $helpArgs=Add-EdtHeapArguments $helpArgs $EdtMaxHeap
+        if ($EdtIniFile) { $helpArgs = @('-ini-file',$EdtIniFile) + $helpArgs }
+        [void](Run-Native $EdtCliPath $helpArgs 'edt-help-import' -UnicodeOutput)
+        Import-Edt $xmlMain $ProjectName (Join-Path $staging 'src\cf') ''
+    }else{
+        Copy-InitializationTree $xmlMain (Join-Path $staging 'src\cf') 'copy-xml-configuration'
+    }
     $mapping = @()
     foreach ($extension in $extensionDirs) {
         $name = $ProjectName+'_'+$extension.Name
-        Import-Edt $extension.FullName $name (Join-Path $staging ('src\cfe\'+$extension.Name)) $ProjectName
+        if($SourceFormat -eq 'EDT'){
+            Import-Edt $extension.FullName $name (Join-Path $staging ('src\cfe\'+$extension.Name)) $ProjectName
+        }else{
+            Copy-InitializationTree $extension.FullName (Join-Path $staging ('src\cfe\'+$extension.Name)) ('copy-xml-'+$extension.Name)
+        }
         $mapping += [PSCustomObject]@{name=$extension.Name;projectName=$name;path=('src/cfe/'+$extension.Name)}
     }
-    $manifest = [ordered]@{schemaVersion=1;sourceFormat='EDT';platformVersion=$platformVersion;configuration=@{projectName=$ProjectName;path='src/cf'};extensions=@($mapping);synchronization=@{enabled=$false;status='Unconfigured: repository baseline must be established separately'}}
+    $manifest = [ordered]@{schemaVersion=1;sourceFormat=$SourceFormat;platformVersion=$platformVersion;configuration=@{projectName=$ProjectName;path='src/cf'};extensions=@($mapping);synchronization=@{enabled=$false;status='Unconfigured: repository baseline must be established separately'}}
     if ($TemplateDirectory) { $manifest['template'] = @{repository='https://github.com/aliferovalex/vanessa-bootstrap';commit=$templateCommit} }
     if ($InfobaseType -eq 'Repository') { $manifest['initializationSource']=@{kind='repository';url=$sourceRepositoryUrl;requestedVersion=$RepositoryVersion;extensions=@($repositories);baselineVerified=$false} }
     Write-Text (Join-Path $staging 'project-init.json') ($manifest | ConvertTo-Json -Depth 8)
@@ -556,7 +574,7 @@ try {
     [void](Run-Native $GitPath @('-C',$staging,'checkout-index','--all',('--prefix='+$windowsCheckout.Replace('\','/')+'/')) 'git-windows-working-copy')
     Copy-InitializationTree $windowsCheckout $staging 'copy-windows-working-copy'
     [void](Run-Native $GitPath @('-C',$staging,'add','--all') 'git-verify-line-endings')
-    if (-not $SkipInitialCommit -or ($inPlace -and -not $FreshHistory)) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'commit','-m','Initialize EDT projects from source')) 'git-commit') }
+    if (-not $SkipInitialCommit -or ($inPlace -and -not $FreshHistory)) { [void](Run-Native $GitPath ($gitIdentity + @('-C',$staging,'commit','-m',('Initialize '+$SourceFormat+' projects from source'))) 'git-commit') }
     # Publish only after all exports, imports and Git operations succeeded.
     Write-InitializationCheckpoint 'publishing'
     if ($inPlace) {
@@ -614,7 +632,8 @@ try {
         if ($EdtMaxHeap) { $registration.EdtMaxHeap=$EdtMaxHeap }
         try { & (Join-Path $PSScriptRoot 'Register-EdtStartWorkspace.ps1') @registration }
         catch { throw "Repository created at $TargetDirectory. EDT Start registration failed; retry Register-EdtStartWorkspace.ps1 separately. $($_.Exception.Message)" }
-    } else { Write-Host 'Open EDT: Import existing projects from the repository. Configure a personal debug infobase separately.' }
+    } elseif($SourceFormat -eq 'EDT') { Write-Host 'Open EDT: Import existing projects from the repository. Configure a personal debug infobase separately.' }
+    else { Write-Host 'Designer XML sources: src/cf (configuration), src/cfe/<name> (extensions). No EDT workspace is created.' }
 } catch {
     $message = Protect-Text $_.Exception.Message
     if($work -and (Test-Path -LiteralPath (Join-Path $work 'initialization.json'))){

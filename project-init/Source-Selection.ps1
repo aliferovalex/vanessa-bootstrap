@@ -1,4 +1,15 @@
 #requires -Version 5.1
+function Select-ProjectSourceFormat {
+    Write-Host 'Select project format:'
+    Write-Host '  1. EDT projects (requires EDT CLI)'
+    Write-Host '  2. Designer XML files (without EDT)'
+    while($true){
+        $answer=([string](Read-Host 'Format number (1-2) [1]')).Trim()
+        if(-not $answer -or $answer -eq '1'){return 'EDT'}
+        if($answer -eq '2'){return 'XML'}
+        Write-Host 'Enter 1 or 2.'
+    }
+}
 function Select-ProjectSourceType {
     param([string[]]$Types=@('File','Server','Repository'))
     $labels=@{File='File infobase';Server='Server infobase';Repository='Configuration repository'}

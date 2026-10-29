@@ -10,7 +10,7 @@ function Get-InitArgument($Arguments,[string]$Name) {
     return ''
 }
 function Get-InitSettingNames {
-    @('InfobaseType','Infobase','TargetDirectory','TemplateDirectory','ProjectRemoteUrl','GitBranch','FreshHistory',
+    @('InfobaseType','SourceFormat','Infobase','TargetDirectory','TemplateDirectory','ProjectRemoteUrl','GitBranch','FreshHistory',
       'DesignerPath','EdtCliPath','EdtIniFile','EdtMaxHeap','RegisterEdtStart','RestartEdtStart','EdtWorkspaceDirectory','GitPath',
       'ProjectName','UserName','RepositoryUserName','RepositoryVersion','ExtensionRepositoryFile','Extensions',
       'SelectExtensions','NoExtensions','AskCredential','AskRepositoryCredential','UseOSAuthentication','NoGitLfs',
